@@ -25,6 +25,7 @@ BBOX = {
     "east": CENTER_LON + LON_OFFSET
 }
 
+print(BBOX)
 
 # interpolation: if Bergen area at left or right edge of dataset (i.e. column 269 or 0 included), pad to the left or
 # right of the 1km resolution dataset, else discard the edges left and right
