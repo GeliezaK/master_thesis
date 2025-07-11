@@ -6,60 +6,139 @@ import pytz
 # Your Frost API client ID
 CLIENT_ID = 'f8cf8726-6617-4696-90a4-5b89a668073a'
 
-# Station IDs
-stations = ['SN50500']  # Florida SN50540, Flesland SN50500
+# Station IDs and names mapping
+stations = {
+    #'SN50539': 'Florida_UiB',
+    'SN50500': 'Flesland'
+}
 
 # Parameters
-element = 'cloud_area_fraction'
-resolution = 'PT10M'
-start_date = '2015-06-01'
-end_date = '2025-05-01'
+element = 'mean(surface_downwelling_shortwave_flux_in_air PT1M)'
+resolution = 'PT1M'
+start_date = '2016-01-01'
+end_date = '2024-12-31'
 
-# Function to build request
-def fetch_data(station_id):
-    url = 'https://frost.met.no/observations/v0.jsonld'
-    headers = {'accept': 'application/json'}
+# Timezone for Bergen
+bergen_tz = pytz.timezone('Europe/Oslo')
 
-    params = {
-        'sources': station_id,
-        'elements': element,
-        'referencetime': f'{start_date}/{end_date}',
-        'timeresolutions': resolution,
-        'fields': 'referenceTime,value',
-        'limit': 1000
-    }
+# Frost API base URL
+BASE_URL = 'https://frost.met.no/observations/v0.jsonld'
 
-    response = requests.get(url, auth=(CLIENT_ID, ''), params=params)
-    response.raise_for_status()
-    data = response.json()
+def daterange(start_dt, end_dt):
+    """Generate first day of each month between start_dt and end_dt"""
+    current = start_dt.replace(day=1)
+    while current <= end_dt:
+        yield current
+        # move to first day of next month
+        if current.month == 12:
+            current = current.replace(year=current.year+1, month=1)
+        else:
+            current = current.replace(month=current.month+1)
+            
+def get_value(obs_list):
+    if isinstance(obs_list, list) and len(obs_list) > 0 and isinstance(obs_list[0], dict):
+        return obs_list[0].get('value')
+    return None
 
-    observations = data.get('data', [])
-    records = []
-    for item in observations:
-        time_utc = datetime.fromisoformat(item['referenceTime'].replace('Z', '+00:00'))
-        value = item['observations'][0]['value']
-        records.append((time_utc, value))
+def download_monthly_data(station_id, start_dt, end_dt):
+    """Download data for one station in monthly chunks"""
+    all_data = []
+    for month_start in daterange(start_dt, end_dt):
+        # Calculate month end (last day of month)
+        if month_start.month == 12:
+            month_end = month_start.replace(year=month_start.year+1, month=1) - timedelta(days=1)
+        else:
+            month_end = month_start.replace(month=month_start.month+1) - timedelta(days=1)
 
-    df = pd.DataFrame(records, columns=['UTC_time', 'cloud_area_fraction'])
-    return df
+        # Format times as ISO8601 date strings
+        time_range = f"{month_start.strftime('%Y-%m-%d')}/{month_end.strftime('%Y-%m-%d')}"
 
-# Convert and filter to local time (13–15)
-def filter_by_local_time(df):
-    oslo = pytz.timezone('Europe/Oslo')
-    df['Local_time'] = df['UTC_time'].dt.tz_localize('UTC').dt.tz_convert(oslo)
-    df_filtered = df[(df['Local_time'].dt.hour >= 12) & (df['Local_time'].dt.hour < 16)]
-    return df_filtered
+        # Build query parameters
+        params = {
+            'sources': station_id,
+            'referencetime': time_range,
+            'elements': element,
+            #'timeresolutions': resolution,
+            #'timeoffsets': 'PT0S',  # no offset, raw time
+            'limit': 100000,  # max per request (Frost default)
+        }
 
-# Fetch and filter data
-all_data = []
-for station in stations:
-    print(f'Fetching data for station {station}...')
-    df = fetch_data(station)
-    df_filtered = filter_by_local_time(df)
-    df_filtered['station'] = station
-    all_data.append(df_filtered)
+        print(f"Downloading {station_id} data from {time_range}...")
 
-# Combine and save
-final_df = pd.concat(all_data)
-final_df.to_csv('cloud_cover_12_16.csv', index=False)
-print("Done! Data saved to cloud_cover_12_16.csv.")
+        try:
+            response = requests.get(BASE_URL, params=params, auth=(CLIENT_ID, ''))
+            response.raise_for_status()
+            data_json = response.json()
+        except requests.exceptions.HTTPError as http_err:
+            print(f"HTTP error for {station_id} {time_range}: {http_err}")
+            continue
+        except Exception as err:
+            print(f"Unexpected error for {station_id} {time_range}: {err}")
+            continue
+
+        # Extract observations
+        observations = data_json.get('data', [])
+
+        if not observations:
+            print(f"No data for {station_id} in {time_range}")
+            continue
+
+        # Convert to DataFrame
+        df = pd.DataFrame(observations)
+
+        # Some API responses have 'observations' nested — flatten if needed
+        if 'observations' in df.columns:
+            df['value'] = df['observations'].apply(get_value)
+            df = df.drop(columns=["observations"])
+
+        # Extract needed columns - 'referenceTime' and 'observations' value
+        # Here 'referenceTime' is the timestamp, and 'observations' field may have 'value'
+        if 'referenceTime' in df.columns:
+            df['timestamp'] = pd.to_datetime(df['referenceTime'])
+        else:
+            print("No 'referenceTime' column in data")
+            continue
+
+        # The value is typically nested inside 'observations' dict - try to extract
+        if 'value' in df.columns:
+            df['value'] = df['value']
+        else:
+            # Try to find 'value' inside nested dict, fallback if missing
+            if 'observations' in observations[0]:
+                df['value'] = df['0'].apply(lambda x: x.get('value') if isinstance(x, dict) else None)
+            else:
+                df['value'] = None
+
+        # Filter timestamps by local Bergen time 12:00-16:00
+        df['local_time'] = df['timestamp'].dt.tz_convert(bergen_tz)
+        df_filtered = df[(df['local_time'].dt.hour >= 12) & (df['local_time'].dt.hour < 16)].copy()
+
+        # Select relevant columns
+        df_filtered = df_filtered[['local_time', 'value']]
+
+        all_data.append(df_filtered)
+
+    if all_data:
+        return pd.concat(all_data, ignore_index=True)
+    else:
+        return pd.DataFrame(columns=['local_time', 'value'])
+
+def main():
+    start_dt = datetime.strptime(start_date, '%Y-%m-%d').replace(tzinfo=pytz.UTC)
+    end_dt = datetime.strptime(end_date, '%Y-%m-%d').replace(tzinfo=pytz.UTC)
+
+    all_stations_data = []
+
+    for station_id in stations.keys():
+        df_station = download_monthly_data(station_id, start_dt, end_dt)
+        all_stations_data.append(df_station)
+
+    # Combine all stations data
+    df_all = pd.concat(all_stations_data, ignore_index=True)
+
+    # Save to CSV
+    df_all.to_csv('data/frost_ghi_1M_Flesland_filtered.csv', index=False)
+    print("Saved filtered data to 'data/frost_ghi_1M_Flesland_filtered.csv'")
+
+if __name__ == '__main__':
+    main()

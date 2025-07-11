@@ -13,6 +13,35 @@ df = pd.read_csv("data/s2_cloud_cover_cleaned.csv")
 # Import seklima dataset ground measurements
 seklima_df = pd.read_csv("data/cloud_cover_snow_seklima_fullrange_cleaned.csv")
 
+# Plot histogram of cloud cover
+print(df["cloud_cover"].describe())
+total_obs = df["cloud_cover"].count()
+print("Total observations:", total_obs)
+
+mixed_sky_threshold = 5
+overcast_sky_threshold = 90
+print("Overcast sky threshold: ", overcast_sky_threshold)
+print("mixed sky threshold: ", mixed_sky_threshold)
+n_overcast = df[df["cloud_cover"] >= overcast_sky_threshold].shape[0]
+n_mixed = df[(df["cloud_cover"] >= mixed_sky_threshold) & (df["cloud_cover"] < overcast_sky_threshold)].shape[0]
+n_clear = df[(df["cloud_cover"] < mixed_sky_threshold)].shape[0]
+print("Number of overcast obs: ", n_overcast)
+print("percentage overcast obs: ", n_overcast/total_obs)
+print("Number of mixed obs: ", n_mixed)
+print("percentage mixed obs: ", n_mixed/total_obs)
+print("Number of clear obs: ", n_clear)
+print("percentage clear obs: ", n_clear/total_obs)
+
+plt.figure(figsize=(10, 6))
+plt.hist(df["cloud_cover"], bins=range(0, 102), edgecolor='black', align='left')
+plt.axvline(overcast_sky_threshold, ls = '--', color='gray')
+plt.axvline(mixed_sky_threshold, ls = '--', color='gray')
+plt.title("Histogram of Cloud Cover (Sentinel-2)")
+plt.xlabel("Cloud Cover (%)")
+plt.ylabel("Frequency")
+plt.grid(True)
+plt.savefig("output/total_cloud_cover_s2_histogram.png")
+
 
 """ # Monthly averages 
 monthly_avg = df.groupby('month')['cloud_cover'].mean()
@@ -98,7 +127,7 @@ plt.tight_layout(rect=[0, 0.03, 1, 0.97])
 plt.savefig("output/yearly_monthly_cloud_cover_avg_cloud_prob.png")
 """
 
-# Plot cloud cover satellite vs. Florida and Flesland 
+""" # Plot cloud cover satellite vs. Florida and Flesland 
 # Plot mean and middle cloud cover for Flesland and Florida
 combined_df = pd.read_csv("data/cloud_cover_2015-06-01_2025-05-01_s2_Flesland_Florida_paired.csv") 
  
@@ -315,4 +344,5 @@ axes[1].set_xlabel("Flesland cloud cover (oktas converted to %)")
 plt.colorbar(h2[3], ax=axes[1], label='Count', orientation='vertical')
 
 plt.tight_layout()
-plt.savefig("output/correlation_hist_2D_s2_florida_flesland_cloud_cover.png")
+plt.savefig("output/correlation_hist_2D_s2_florida_flesland_cloud_cover.png") """
+
