@@ -1,3 +1,5 @@
+#Cluster the pixels in Bergen ROI according to seasonal cloudiness profiles
+
 import rasterio
 import cartopy.crs as ccrs
 import numpy as np

@@ -1,3 +1,5 @@
+# Download 1M resolution GHI data from florida and flesland via Frost API 
+
 import requests
 import pandas as pd
 from datetime import datetime, timedelta

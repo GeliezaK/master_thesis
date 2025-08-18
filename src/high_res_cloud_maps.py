@@ -543,8 +543,49 @@ plt.subplots_adjust(wspace=0.05, hspace=0.2, right=0.9)
 plt.savefig("output/cloud_prob_seasonal_percentiles_landmarks.png")
 """
 
+def plot_single_tif(path, outpath, title, colorbar_label, histogram_title, hist_ylabel): 
+    # Plot alltime aggregates 
+
+    with rasterio.open(path) as src:
+        band1 = src.read(1, masked=True) * 100 # remove NaN data, convert to %
+        band1 = band1/100 # divide by 100 due to rescaling-error
+
+    min_value = np.nanmin(band1)
+    max_value = np.nanmax(band1)
+
+    # Plotting the cloud frequency map
+    fig = plt.figure(figsize=(10, 6))
+    ax = plt.axes(projection=ccrs.UTM(32))
+    ax.set_extent(extent, crs=ccrs.UTM(32))
+    img = ax.imshow(band1, cmap='viridis', vmin=np.round(min_value,3), vmax=np.round(max_value,3), transform=ccrs.UTM(32), extent=extent)
+
+    plot_landmarks(ax, coast_clipped, gdf)
+
+    fig.colorbar(img, label=colorbar_label)
+    plt.title(title)
+    plt.savefig(outpath)
+    print(f"Tif plot saved as png to {outpath}.")
+
+    # Histogram of pixel values 
+    hist_outpath = os.path.splitext(outpath)[0] + "_histogram.png"
+    plt.figure(figsize=(8, 4))
+    plt.hist(band1.flatten(), bins=50, color='skyblue', edgecolor='black')
+    plt.title(histogram_title)
+    plt.xlabel(colorbar_label)
+    plt.ylabel(hist_ylabel)
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.tight_layout()
+    plt.savefig(hist_outpath)
+    print(f"Tif pixel value histogram saved to {hist_outpath}.")
+
 if __name__=="__main__": 
     #plot_alltime_cloud_cover("data/Cloud_mask_mean_alltime_mixed.tif", "output/cloud_mask_mean_alltime_mixed.png")
     #plot_monthly_cloud_cover("data/placeholder.tif", "output/cloud_mask_mean_monthly_mixed.png")
-    plot_seasonal_cloud_cover("data/placeholder.tif", "output/cloud_mask_mean_seasonal_mixed.png")
+    #plot_seasonal_cloud_cover("data/placeholder.tif", "output/cloud_mask_mean_seasonal_mixed.png")
+    plot_single_tif("data/surface_ghi_mean_April2020_scale_10.tif", 
+                    "output/surface_ghi_mean_April2020_scale_10.png", 
+                    "Total GHI at Surface Level (April 2020), 10m", 
+                    "GHI (W/m²)", 
+                    "Distribution of GHI values (W/m²) (April 2020, 10m)", 
+                    "Frequency")
     
