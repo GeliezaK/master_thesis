@@ -582,10 +582,10 @@ if __name__=="__main__":
     #plot_alltime_cloud_cover("data/Cloud_mask_mean_alltime_mixed.tif", "output/cloud_mask_mean_alltime_mixed.png")
     #plot_monthly_cloud_cover("data/placeholder.tif", "output/cloud_mask_mean_monthly_mixed.png")
     #plot_seasonal_cloud_cover("data/placeholder.tif", "output/cloud_mask_mean_seasonal_mixed.png")
-    plot_single_tif("data/surface_ghi_mean_April2020_scale_10.tif", 
-                    "output/surface_ghi_mean_April2020_scale_10.png", 
-                    "Total GHI at Surface Level (April 2020), 10m", 
+    plot_single_tif("data/surface_ghi_mean_July2020_scale_10.tif", 
+                    "output/surface_ghi_mean_July2020_scale_10.png", 
+                    "Total GHI at Surface Level (July 2020), 10m", 
                     "GHI (W/m²)", 
-                    "Distribution of GHI values (W/m²) (April 2020, 10m)", 
+                    "Distribution of GHI values (W/m²) (July 2020, 10m)", 
                     "Frequency")
     
