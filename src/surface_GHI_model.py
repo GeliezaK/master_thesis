@@ -1,98 +1,199 @@
 # Model surface GHI 
 # Inputs:   - filepath to DSM/DEM file 
 #           - folderpath to LUT 
-#           - filepath to file with input params to LUT
-#           -
+#           - folderpath to S2 images
+
+import rasterio
+from rasterio.warp import calculate_default_transform, reproject, Resampling
+from rasterio.merge import merge
+from rasterio.mask import mask
+from rasterio.enums import Resampling
+import geopandas as gpd
+from shapely.geometry import box
+import glob
+import os
+import numpy as np
+from scipy.ndimage import shift
+import matplotlib.pyplot as plt
+import math
+import pvlib  # for solar position
+from datetime import datetime
+from rasterio.plot import show
+from high_res_cloud_maps import plot_landmarks, plot_single_band, plot_single_band_histogram
+
+# Convert degree to radian
+def deg2rad(deg):
+    return deg * math.pi / 180
+
+
+# Define the center of the bounding box (Bergen, Norway)
+CENTER_LAT = 60.39
+CENTER_LON = 5.33
+
+# Approximate degree adjustments for 100km x 100km box
+DEG_LAT_TO_KM = 111.412  # 1 degree latitude at 60° converted to km (https://en.wikipedia.org/wiki/Latitude)
+DEG_LON_TO_KM = 111.317 * math.cos(deg2rad(CENTER_LAT))  # 1 degree longitude converted to km
+LAT_OFFSET = 12.5 / DEG_LAT_TO_KM  # ~10km north/south
+LON_OFFSET = 12.5 / DEG_LON_TO_KM  # ~10km east/west (varies with latitude, approximation)
+
+# Define the bounding box
+BBOX = {
+    "north": CENTER_LAT + LAT_OFFSET,
+    "south": CENTER_LAT - LAT_OFFSET,
+    "west": CENTER_LON - LON_OFFSET,
+    "east": CENTER_LON + LON_OFFSET
+}
 
 LUT_folderpath = "output/LUT"
 DSM_filepath = "data/bergen_dem.tif"
-LUT_params_filepath = "output/LUT/key_params.txt"
+S2_folderpath = "data/S2_testfiles"
 
-
-def read_LUT_key_params_to_list(LUT_params_filepath, variable): 
-    """Read params in LUT filepath to local global variables. """
-    # Open file 
-    # Read the variables that are available 
-    # return local list or dict 
-    if variable == "doy": 
-        return [15, 46, 74, 105, 135, 166, 196, 227, 258, 288, 319, 349]
-    elif variable == "hod": 
-        return {15: [8, 9, 10, 11, 12, 13, 14, 15], 
-                46: [7, 8, 9, 10, 11, 12, 13, 14, 15, 16], 
-                74: [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18], 
-                105: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19], 
-                135: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20], 
-                166: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21], 
-                196: [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21], 
-                227: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20], 
-                258: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18], 
-                288: [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16], 
-                319: [8, 9, 10, 11, 12, 13, 14, 15], 
-                349: [9, 10, 11, 12, 13, 14]}
-    elif variable == "albedo": 
-        return [0.081, 0.129, 0.174, 0.224, 0.354] 
-    elif variable == "tau": 
-        return [1.0, 3.41, 5.50, 7.68, 10.18, 13.67, 19.34, 27.79, 42.03, 73.23, 125.42, 250.0]
-    elif variable == "cloud_base_height": 
-        return [0.08, 0.167, 0.285, 0.571, 0.915, 1.286, 1.753, 2.370, 3.171, 4.165, 5.451, 6.543, 8.498]
-    elif variable == "cloud_type": 
-        ['ice', 'water']
-    else : 
-        return []
-
-
-DOY = read_LUT_key_params_to_list(LUT_params_filepath, "doy")
-HOD = read_LUT_key_params_to_list(LUT_params_filepath, "hod")
-ALBEDO = read_LUT_key_params_to_list(LUT_params_filepath, "albedo")
-TAU = read_LUT_key_params_to_list(LUT_params_filepath, "tau")
-CLOUD_BASE_HEIGHT = read_LUT_key_params_to_list(LUT_params_filepath, "cloud_base_height")
-CLOUD_TYPE = read_LUT_key_params_to_list(LUT_params_filepath, "cloud_type")
     
+def load_image(filepath): 
+    with rasterio.open(filepath) as src:
+        dem = src.read(1).astype(float)
+        profile = src.profile
+    return dem, profile
 
-def read_GHI_from_LUT(doy, hod, albedo, cloud_base_height, tau, cloud_type): 
-    """Given params (Doy, Hour of day, albedo, cloud base height, cloud optical thickness (=tau), cloud_type (ice/water))
-    get corresponding closest entry in LUT"""
-    # Get closest parameter config that is available 
-    get_LUT_key(doy, hod, albedo, cloud_base_height, tau, cloud_type)
-    # Open corresponding LUT file
-    # if nonexistend, throw error (here it should be asserted that all param configs give valid files)
-    # turn to pd dataframe
-    # Read from file GHI_clear, diffuse, direct, as well as CAF_clear, diffuse, direct
-    # If returns none, throw error 
-    # return ghi values
-    
-def get_LUT_key(doy, hod, albedo, cloud_base_height, tau, cloud_type): 
-    """Match parameters with closest available config that has entry in the table"""
-    # Get closest doy from list 
-    # Get closest hod from list 
-    # get clostest albedo 
-    # get closest cloud_base_height
-    # get closest tau
-    # get closest cloud type 
-    
-def read_DSM(DSM_filepath): 
-    """Read and return DSM file"""
-    pass 
 
-# TODO: get shaded pixels from DEM 
-def read_satellite_image(satellite_filepath): 
-    """Read s2 image"""
-    pass 
+# Get solar zenith and azimuth
+def get_solar_angle(datetime_str, lat=CENTER_LAT, lon=CENTER_LON): 
+    dt = datetime.strptime(datetime_str, "%Y-%m-%d_%H-%M-%S")
+    solpos = pvlib.solarposition.get_solarposition(dt, lat, lon)
+    zenith = float(solpos['zenith'].values[0])
+    azimuth = float(solpos['azimuth'].values[0])
+    return zenith, azimuth
 
-def read_cloud_properties(): 
-    """From other satellites (s5p): read cloud optical thickness, cloud base height, albedo, cloud type (s2harmonized), 
+# Compute hillshade from DEM
+def get_hillshade_band(dem, zenith, azimuth, profile): 
+    # resolution (in map units)
+    xres = profile['transform'][0]
+    yres = -profile['transform'][4]
+    print(xres)
+    print(yres)
+
+    # slope and aspect
+    x, y = np.gradient(dem, xres, yres)
+    slope = np.pi/2 - np.arctan(np.sqrt(x*x + y*y))
+    aspect = np.arctan2(-x, y)
+
+    # convert angles to rad
+    zenith_rad = np.deg2rad(zenith)
+    azimuth_rad = np.deg2rad(azimuth)
+
+    # hillshade (0–1)
+    shaded = (np.sin(zenith_rad) * np.sin(slope) +
+              np.cos(zenith_rad) * np.cos(slope) * np.cos(azimuth_rad - aspect))
+
+    hillshade = np.clip(shaded, 0, 1)
+
+    return hillshade
+
+
+def project_cloud_shadow(cloud_mask, solar_zenith, solar_azimuth,
+                         cbh_m, sat_zenith=0.0, sat_azimuth=0.0,
+                         pixel_size=10, cloud_top_height=None):
     """
-    pass
+    Project cloud shadows onto the surface given cloud mask,
+    solar and satellite geometry.
+    
+    Parameters
+    ----------
+    cloud_mask : 2D numpy array (0 clear, 1 cloud)
+    solar_zenith : solar zenith angle in degrees
+    solar_azimuth : solar azimuth angle in degrees (0=north, clockwise)
+    cbh_m : cloud base height in meters
+    sat_zenith : satellite viewing zenith angle in degrees
+    sat_azimuth : satellite viewing azimuth angle in degrees (0=north, clockwise)
+    pixel_size : resolution of the raster in meters
+    cloud_top_height : optional, cloud top height in meters.
+                       If not provided, cbh_m is used.
+    
+    Returns
+    -------
+    shadow_mask : 2D numpy array (0 no shadow, 1 shadow)
+    """
+    assert 0 <= solar_zenith < 90, (
+        f"Invalid solar zenith angle {solar_zenith:.2f}°. "
+        "Sun is below the horizon and cannot cast shadows."
+    )
+    
+    # Use cloud top height if available, else fall back to base height
+    cth_m = cloud_top_height if cloud_top_height is not None else cbh_m
 
-def simulate_GHI_pixelwise(): 
-    """for each pixel, calculate the GHI """
-    # for each pixel in satellite image : 
-    # Get cloud mask (cloud 0 or 1)
-    # Get cloud properties (albedo, cloud_base_height, cloud_optical thickness, cloud_type)
-    # calculate if shady 
-    # if so, if clear:  GHI = GHI_diffuse_clear (set direct component to 0)
-    # if so, if cloudy: GHI = GHI_diffuse_clear * CAF_diffuse
-    # else (not shady): 
-    # if clear : GHI = GHI_clear
-    # if cloudy : GHI = GHI_clear * CAF_GHI
-    # return: output is the map of GHI for each pixel 
+    # --- Step 1: Correct cloud position for parallax due to satellite view ---
+    sat_zenith_rad = np.deg2rad(sat_zenith)
+    sat_azimuth_rad = np.deg2rad(sat_azimuth)
+
+    parallax_disp = cth_m * np.tan(sat_zenith_rad)
+    dx_sat = parallax_disp * np.sin(sat_azimuth_rad)
+    dy_sat = -parallax_disp * np.cos(sat_azimuth_rad)
+    print(f"parallax disp: {parallax_disp:.2f}, x: {dx_sat:.2f}, y: {dy_sat:.2f}")
+
+    # --- Step 2: Project shadow using solar geometry from corrected mask ---
+    solar_zenith_rad = np.deg2rad(solar_zenith)
+    solar_azimuth_rad = np.deg2rad(solar_azimuth)
+
+    horiz_disp = cbh_m * np.tan(solar_zenith_rad)
+    dx_sun = horiz_disp * np.sin(solar_azimuth_rad)
+    dy_sun = -horiz_disp * np.cos(solar_azimuth_rad)
+    print(f"horizontal_disp: {horiz_disp:.2f}, x: {dx_sun:.2f}, y: {dy_sun:.2f}")
+
+    dx_total = dx_sat + dx_sun
+    dy_total = dy_sat + dy_sun
+
+    # Convert to pixels
+    dx_pix = dx_total / pixel_size
+    dy_pix = dy_total / pixel_size
+
+    print(f"Total displacement in pixels: x={dx_pix:.2f}, y={dy_pix:.2f}")
+
+    # Apply single shift
+    shadow_mask = shift(cloud_mask,
+                        shift=(-dy_pix, dx_pix),
+                        mode='constant', order=0, cval=0)
+
+    shadow_mask = (shadow_mask > 0).astype(np.uint8)
+    
+    return shadow_mask
+
+
+if __name__ == "__main__": 
+    s2_img, profile = load_image("data/S2_testfiles/S2_cloud_2018-07-28.tif")
+    #print(profile)
+    
+    # example datetime
+    datetime_str = "2017-03-21_13-03-58"
+    solar_zenith, solar_azimuth = get_solar_angle(datetime_str) # Note: times in UTC!
+    print(f"Solar angles for datetime {datetime_str}: SZA {np.round(solar_zenith,2)}, and AZI {np.round(solar_azimuth,2)}.")
+    
+    # Cloud base height (e.g., 2000 m)
+    cbh_m = 1000 
+    sat_zenith = 7.5
+    sat_azimuth = 108.5
+
+    shadow_mask = project_cloud_shadow(s2_img, solar_zenith, solar_azimuth, cbh_m, 
+                                       sat_zenith, sat_azimuth, pixel_size = 10, cloud_top_height=cbh_m)
+
+
+    plot_single_band(
+        band=shadow_mask,
+        outpath=f"output/shadow_mask_{datetime_str}_satzenith_{np.round(sat_zenith,1)}_satazi_{np.round(sat_azimuth,1)}.png",
+        title=f"Shadow mask {datetime_str}",
+        colorbar_label="Shadow",
+        value_ranges=[0,0.5],
+        value_colors=["white", "#4C4E52"]
+    )
+    
+    """plot_single_band_histogram(hillshade_band, 
+                               f"output/hillshade_SZA{np.round(zenith,2)}_AZI{np.round(azimuth,2)}_histogram.png",
+                               f"Histogram of pixel values in hillshade image",
+                               "Relative illumination value",
+                               "Frequency")
+    plot_single_band_histogram(dsm10m, 
+                               f"output/dsm_bergen_10m_histogram.png",
+                               "Histogram of elevation values (Bergen, 10m pixels)",
+                               "Elevation (m)",
+                               "Frequency")
+    
+    """

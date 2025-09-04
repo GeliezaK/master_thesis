@@ -9,6 +9,9 @@ import cartopy.feature as cfeature
 from shapely.geometry import Point
 import geopandas as gpd
 from shapely.geometry import box
+from matplotlib.ticker import FormatStrFormatter
+from matplotlib.colors import BoundaryNorm, ListedColormap
+
 
 
 # Folder path
@@ -17,6 +20,8 @@ folder = "data"
 # Month number name map 
 months_map = {1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr', 5: 'May', 6: 'Jun', 7: 'Jul', 8: 'Aug',
               9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dec'}
+month_names = ["January", "February", "March", "April", "May", "June", "July", "August", 
+               "September", "October", "November", "December"]
 
 # List of season names 
 seasons = ["Winter", "Spring", "Summer", "Autumn"]
@@ -29,7 +34,7 @@ seasonal_months = [12, 1, 2,   # Winter: Dec, Jan, Feb
                    9, 10, 11]  # Autumn: Sep, Oct, Nov
 
 # Path to your exported image
-filename = "Cloud_mask_median_alltime"
+filename = "surface_ghi_mean_scale_10"
 path = f'{folder}/{filename}.tif'
 
 # Read one file to get metadata (transform, CRS)
@@ -44,7 +49,7 @@ with rasterio.open(sample_path) as src:
 coast = gpd.read_file("data/coastline_bergen.geojson")     
 
 # Reproject to raster CRS (EPSG:32632)
-coast = coast.to_crs("EPSG:32632")
+coast = coast.to_crs(crs)
 
 # Create bounding box polygon
 raster_bbox = box(*raster_bounds)
@@ -63,12 +68,13 @@ landmarks = {
 gdf = gpd.GeoDataFrame(
     geometry=[Point(lon, lat) for lat, lon in landmarks.values()],
     index=landmarks.keys(),
-    crs="EPSG:4326"
+    crs=crs
 ).to_crs(crs.to_string())
 
 def plot_landmarks(ax, coast_clipped, gdf):
-    # Add coastlines, borders, roads
-    coast_clipped.plot(ax=ax, color='black', linewidth=0.5, label="Coastline")
+    # Add coastlines
+    coast_clipped.plot(ax=ax, color='black', linewidth=0.5, label="Coastline",
+                       transform=ccrs.PlateCarree())  # EPSG:4326
 
     # Add gridlines
     gl = ax.gridlines(draw_labels=True, linewidth=0.3, color='gray', alpha=0.5)
@@ -76,9 +82,11 @@ def plot_landmarks(ax, coast_clipped, gdf):
 
     # Plot landmarks
     for name, point in gdf.iterrows():
-        ax.plot(point.geometry.x, point.geometry.y, 'ro', transform=ccrs.UTM(32))
-        ax.text(point.geometry.x + 1000, point.geometry.y + 1000, name, fontsize=8,
-                transform=ccrs.UTM(32), color='red')
+        ax.plot(point.geometry.x, point.geometry.y, 'ro',
+                transform=ccrs.PlateCarree())  # use PlateCarree for lon/lat
+        ax.text(point.geometry.x + 0.01, point.geometry.y + 0.01, name, fontsize=8,
+                transform=ccrs.PlateCarree(), color='red')
+
 
 def read_image_and_append(path, data_list): 
     with rasterio.open(path) as src:
@@ -90,69 +98,31 @@ def read_image_and_append(path, data_list):
         print(f"pixel range: min: {np.round(np.nanmin(data),3)}, max: {np.round(np.nanmax(data),3)}")
         print(f"max pixel difference: {np.round((np.nanmax(data) - np.nanmin(data)),3)} %")
 
-def plot_alltime_cloud_cover(path, outpath): 
-    # Plot alltime aggregates 
-
-    with rasterio.open(path) as src:
-        cloud_freq = src.read(1, masked=True) * 100 # remove NaN data, convert to %
-
-    min_value = np.nanmin(cloud_freq)
-    max_value = np.nanmax(cloud_freq)
-
-    # Plotting the cloud frequency map
-    fig = plt.figure(figsize=(10, 6))
-    ax = plt.axes(projection=ccrs.UTM(32))
-    ax.set_extent(extent, crs=ccrs.UTM(32))
-    img = ax.imshow(cloud_freq, cmap='viridis', vmin=np.round(min_value,3), vmax=np.round(max_value,3), transform=ccrs.UTM(32), extent=extent)
-
-    plot_landmarks(ax, coast_clipped, gdf)
-
-    fig.colorbar(img, label='Cloud Frequency (%)')
-    plt.title('All-Time Cloud Frequency (10m)')
-    plt.savefig(outpath)
-    print(f"Mean alltime cloud cover plot saved to {outpath}.")
-
-    # Histogram of pixel values 
-    hist_outpath = os.path.splitext(outpath)[0] + "_histogram.png"
-    plt.figure(figsize=(8, 4))
-    plt.hist(cloud_freq.flatten(), bins=50, color='skyblue', edgecolor='black')
-    plt.title('Histogram of Cloud Frequency Pixel Values')
-    plt.xlabel('Cloud Frequency (%)')
-    plt.ylabel('Pixel Count')
-    plt.grid(True, linestyle='--', alpha=0.5)
-    plt.tight_layout()
-    plt.savefig(hist_outpath)
-    print(f"Mean alltime cloud cover plot (pixel value histograms) saved to {hist_outpath}.")
-
-def plot_monthly_cloud_cover(path, outpath): 
+def plot_monthly_cloud_cover(monthly_file_dict, outpath, title, colorbar_ylabel, histogram_title, dpi): 
     # Pre-allocate list to store data
     monthly_data = []
 
     # Read all 12 monthly images
-    for month in range(1, 13):
-        path = os.path.join(folder, f"Cloud_mask_mean_month{month}_mixed.tif")
+    for month, path in monthly_file_dict.items():
         print(f"{month}")
         read_image_and_append(path, monthly_data)
-
 
     # Determine shared color scale (min/max) across all months
     vmin = np.nanmin([np.nanmin(d) for d in monthly_data])
     vmax = np.nanmax([np.nanmax(d) for d in monthly_data])
 
-
     # Plot in 4 rows × 3 columns
-    fig, axes = plt.subplots(4, 3, figsize=(14,14), subplot_kw={'projection': ccrs.UTM(32)})
-    fig.suptitle("Monthly Cloud Frequency Maps (mean)", fontsize=16)
-
+    fig, axes = plt.subplots(4, 3, figsize=(14, 14), dpi=dpi, subplot_kw={'projection': ccrs.PlateCarree()})
+    fig.suptitle(title, fontsize=16)
 
     for idx, month in enumerate(seasonal_months):
         row, col = divmod(idx, 3)
         ax = axes[row, col]
 
         ax.set_title(months_map[month], fontsize=12)
-        ax.set_extent(extent, crs=ccrs.UTM(32))
+        ax.set_extent(extent, crs=ccrs.PlateCarree())
         
-        img = ax.imshow(monthly_data[month-1], origin='upper', transform=ccrs.UTM(32), extent=extent,
+        img = ax.imshow(monthly_data[month-1], origin='upper', transform=ccrs.PlateCarree(), extent=extent,
                         cmap='viridis', vmin=vmin, vmax=vmax)
 
         plot_landmarks(ax, coast_clipped, gdf)        
@@ -161,17 +131,17 @@ def plot_monthly_cloud_cover(path, outpath):
     # Add a single colorbar to the right of all plots
     # [left, bottom, width, height] in figure coordinates
     cbar_ax = fig.add_axes([0.92, 0.25, 0.015, 0.5])
-    fig.colorbar(img, cax=cbar_ax, label="Cloud Frequency (%)")
+    fig.colorbar(img, cax=cbar_ax, label=colorbar_ylabel)
 
     plt.subplots_adjust(wspace=0.05, hspace=0.2, right=0.9)
 
     plt.savefig(outpath)
-    print(f"Mean Monthly Cloud Cover plot saved to {outpath}. ")
+    print(f"Monthly plot saved to {outpath}. ")
 
 
     # Pixel values histogramm for each month
     fig, axes = plt.subplots(4, 3, figsize=(14,14))
-    fig.suptitle("Monthly Cloud Frequency Histograms", fontsize=16)
+    fig.suptitle(histogram_title, fontsize=16)
 
     # Define colormap and normalization
     cmap = cm.get_cmap('viridis')
@@ -207,7 +177,7 @@ def plot_monthly_cloud_cover(path, outpath):
                 bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="gray", alpha=0.8))
 
         ax.set_xlim(vmin, vmax)
-        ax.set_xlabel("Cloud Frequency (%)")
+        ax.set_xlabel(colorbar_ylabel)
         ax.set_ylabel("Pixel Count")
         ax.grid(True, linestyle='--', alpha=0.5)
 
@@ -215,56 +185,49 @@ def plot_monthly_cloud_cover(path, outpath):
     outpath_without_ext = os.path.splitext(outpath)[0]
     hist_outpath = outpath_without_ext+"_histograms.png"
     plt.savefig(hist_outpath)
-    print(f"Mean Monthly Cloud Cover Histogram plot saved to {hist_outpath}. ")
-
+    print(f"Monthly histogram plot saved to {hist_outpath}. ")
  
-def plot_seasonal_cloud_cover(path, outpath): 
+def plot_seasonal_cloud_cover(seasonal_files_dict, outpath, title, colorbar_label, histogram_title, dpi): 
     # Seasonal Maps 
     seasonal_data = []
 
     # Read images for each season
-    for season in seasons:
-        path = os.path.join(folder, f"Cloud_mask_mean_{season}_mixed.tif")
+    for season, path in seasonal_files_dict.items():
         print(f"{season}")
         read_image_and_append(path, seasonal_data)
 
-
-    # Determine shared color scale (min/max) across all seasons
-    vmin = np.nanmin([np.nanmin(d) for d in seasonal_data])
-    vmax = np.nanmax([np.nanmax(d) for d in seasonal_data])
-
-
     # Plot in 2 rows × 2 columns
-    fig, axes = plt.subplots(2, 2, figsize=(10,10), subplot_kw={'projection': ccrs.UTM(32)})
-    fig.suptitle("Seasonal Cloud Frequency Maps (mean)", fontsize=16)
+    fig, axes = plt.subplots(2, 2, figsize=(10,10), dpi=dpi, subplot_kw={'projection': ccrs.PlateCarree()})
+    fig.suptitle(title, fontsize=16)
 
-    # plot for each season
     for idx, season in enumerate(seasons):
         row, col = divmod(idx, 2)
         ax = axes[row, col]
 
         ax.set_title(f"{season}", fontsize=12)
-        ax.set_extent(extent, crs=ccrs.UTM(32))
-        
-        img = ax.imshow(seasonal_data[idx], origin='upper', transform=ccrs.UTM(32), extent=extent,
-                        cmap='viridis', vmin=vmin, vmax=vmax)
+        ax.set_extent(extent, crs=ccrs.PlateCarree())
 
-        plot_landmarks(ax, coast_clipped, gdf)        
-        
+        # Compute season-specific min/max
+        vmin = np.nanmin(seasonal_data[idx])
+        vmax = np.nanmax(seasonal_data[idx])
 
-    # Add a single colorbar to the right of all plots
-    # [left, bottom, width, height] in figure coordinates
-    cbar_ax = fig.add_axes([0.92, 0.25, 0.015, 0.5])
-    fig.colorbar(img, cax=cbar_ax, label="Cloud Frequency (%)")
+        img = ax.imshow(seasonal_data[idx], origin='upper',
+                        extent=extent, cmap='viridis', vmin=vmin, vmax=vmax,
+                        transform=ccrs.PlateCarree())
 
-    plt.subplots_adjust(wspace=0.05, hspace=0.2, right=0.9)
+        plot_landmarks(ax, coast_clipped, gdf)
 
-    plt.savefig(outpath)
-    print(f"Mean Seasonal cloud cover saved to {outpath}.")
+        # Add a colorbar specific to this subplot
+        cbar = fig.colorbar(img, ax=ax, orientation='vertical', fraction=0.046, pad=0.04)
+        cbar.set_label(colorbar_label)
+
+    plt.subplots_adjust(wspace=0.2, hspace=0.3)
+    plt.savefig(outpath, bbox_inches="tight")
+    print(f"Seasonal plot saved to {outpath}.")
 
     # Pixel values histogramm for each season
     fig, axes = plt.subplots(2, 2, figsize=(14,14))
-    fig.suptitle("Seasonal Cloud Frequency Histograms", fontsize=16)
+    fig.suptitle(histogram_title, fontsize=16)
 
     # Define colormap and normalization
     cmap = cm.get_cmap('viridis')
@@ -300,7 +263,7 @@ def plot_seasonal_cloud_cover(path, outpath):
                 bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="gray", alpha=0.8))
 
         ax.set_xlim(vmin, vmax)
-        ax.set_xlabel("Cloud Frequency (%)")
+        ax.set_xlabel(colorbar_label)
         ax.set_ylabel("Pixel Count")
         ax.grid(True, linestyle='--', alpha=0.5)
 
@@ -327,7 +290,7 @@ def plot_yearly_cloud_cover(path, outpath):
 
 
     # Plot in 3 rows × 3 columns (9 years)
-    fig, axes = plt.subplots(3, 3, figsize=(14,14), subplot_kw={'projection': ccrs.UTM(32)})
+    fig, axes = plt.subplots(3, 3, figsize=(14,14), subplot_kw={'projection': ccrs.PlateCarree()})
     fig.suptitle("Yearly Cloud Frequency Maps (mean)", fontsize=16)
 
     # plot for each season
@@ -336,9 +299,9 @@ def plot_yearly_cloud_cover(path, outpath):
         ax = axes[row, col]
 
         ax.set_title(f"{year}", fontsize=12)
-        ax.set_extent(extent, crs=ccrs.UTM(32))
+        ax.set_extent(extent, crs=ccrs.PlateCarree())
         
-        img = ax.imshow(yearly_data[idx], origin='upper', transform=ccrs.UTM(32), extent=extent,
+        img = ax.imshow(yearly_data[idx], origin='upper', transform=ccrs.PlateCarree(), extent=extent,
                         cmap='viridis', vmin=vmin, vmax=vmax)
 
         plot_landmarks(ax, coast_clipped, gdf)        
@@ -421,7 +384,7 @@ vmax = np.nanmax([np.nanmax(d) for d in percentile_data])
 
 
 # Plot in 3 columns (Q1, Median, Q3)
-fig, axes = plt.subplots(1, 3, figsize=(18,10), subplot_kw={'projection': ccrs.UTM(32)})
+fig, axes = plt.subplots(1, 3, figsize=(18,10), subplot_kw={'projection': ccrs.PlateCarree()})
 fig.suptitle("Q1, Median and Q3 Percentiles of Cloud Probability", fontsize=16)
 
 # plot for each percentile
@@ -429,9 +392,9 @@ for idx, p in enumerate(percentiles):
     ax = axes[idx]
 
     ax.set_title(f"{p}", fontsize=12)
-    ax.set_extent(extent, crs=ccrs.UTM(32))
+    ax.set_extent(extent, crs=ccrs.PlateCarree())
     
-    img = ax.imshow(percentile_data[idx], origin='upper', transform=ccrs.UTM(32), extent=extent,
+    img = ax.imshow(percentile_data[idx], origin='upper', transform=ccrs.PlateCarree(), extent=extent,
                     cmap='viridis', vmin=vmin, vmax=vmax)
 
     plot_landmarks(ax, coast_clipped, gdf)        
@@ -468,7 +431,7 @@ for m in seasonal_months:
 
 
 # Plot in 3 columns (Q1, Median, Q3)
-fig, axes = plt.subplots(12, 3, figsize=(15,48), subplot_kw={'projection': ccrs.UTM(32)})
+fig, axes = plt.subplots(12, 3, figsize=(15,48), subplot_kw={'projection': ccrs.PlateCarree()})
 fig.suptitle("Monthly Q1, Median, and Q3 Percentiles of Cloud Probability", fontsize=20)
 
 # plot for each percentile
@@ -478,9 +441,9 @@ for row_idx, month in enumerate(seasonal_months):
         arr = monthly_percentile_data[month][col_idx]
 
         ax.set_title(f"{months_map[month]}, {p}", fontsize=12)
-        ax.set_extent(extent, crs=ccrs.UTM(32))
+        ax.set_extent(extent, crs=ccrs.PlateCarree())
         
-        img = ax.imshow(monthly_percentile_data[month][col_idx], origin='upper', transform=ccrs.UTM(32), extent=extent,
+        img = ax.imshow(monthly_percentile_data[month][col_idx], origin='upper', transform=ccrs.PlateCarree(), extent=extent,
                         cmap='viridis', vmin=vmin, vmax=vmax)
 
         plot_landmarks(ax, coast_clipped, gdf)        
@@ -517,7 +480,7 @@ for s in seasons:
 
 
 # Plot in 2 rows 3 columns (Q1, Median, Q3)
-fig, axes = plt.subplots(4, 3, figsize=(15,18), subplot_kw={'projection': ccrs.UTM(32)})
+fig, axes = plt.subplots(4, 3, figsize=(15,18), subplot_kw={'projection': ccrs.PlateCarree()})
 fig.suptitle("Seasonal Q1, Median, and Q3 Percentiles of Cloud Probability", fontsize=20)
 
 # plot for each percentile
@@ -527,9 +490,9 @@ for row_idx, s in enumerate(seasons):
         arr = seasonal_percentile_data[s][col_idx]
 
         ax.set_title(f"{s}, {p}", fontsize=12)
-        ax.set_extent(extent, crs=ccrs.UTM(32))
+        ax.set_extent(extent, crs=ccrs.PlateCarree())
         
-        img = ax.imshow(seasonal_percentile_data[s][col_idx], origin='upper', transform=ccrs.UTM(32), extent=extent,
+        img = ax.imshow(seasonal_percentile_data[s][col_idx], origin='upper', transform=ccrs.PlateCarree(), extent=extent,
                         cmap='viridis', vmin=vmin, vmax=vmax)
 
         plot_landmarks(ax, coast_clipped, gdf)        
@@ -543,49 +506,134 @@ plt.subplots_adjust(wspace=0.05, hspace=0.2, right=0.9)
 plt.savefig("output/cloud_prob_seasonal_percentiles_landmarks.png")
 """
 
-def plot_single_tif(path, outpath, title, colorbar_label, histogram_title, hist_ylabel): 
+def plot_single_tif(path, outpath, title, colorbar_label, value_ranges=None, value_colors=None): 
     # Plot alltime aggregates 
-
     with rasterio.open(path) as src:
-        band1 = src.read(1, masked=True) * 100 # remove NaN data, convert to %
-        band1 = band1/100 # divide by 100 due to rescaling-error
+        band1 = src.read(1, masked=True) # remove NaN data
+        band1 = band1 
 
-    min_value = np.nanmin(band1)
-    max_value = np.nanmax(band1)
+    plot_single_band(band1, outpath, title, colorbar_label, value_ranges, value_colors)
+    
 
-    # Plotting the cloud frequency map
-    fig = plt.figure(figsize=(10, 6))
-    ax = plt.axes(projection=ccrs.UTM(32))
-    ax.set_extent(extent, crs=ccrs.UTM(32))
-    img = ax.imshow(band1, cmap='viridis', vmin=np.round(min_value,3), vmax=np.round(max_value,3), transform=ccrs.UTM(32), extent=extent)
+def plot_single_band(band, outpath, title, colorbar_label,
+                     value_ranges=None, value_colors=None): 
+    """
+    Plot a single band with either a continuous colormap (default viridis) 
+    or a discrete custom colormap defined by value ranges + colors.
+    
+    Parameters
+    ----------
+    band : 2D np.ndarray
+        Array of values to plot.
+    outpath : str
+        Path to save the figure.
+    title : str
+        Title of the plot.
+    colorbar_label : str
+        Label for the colorbar.
+    value_ranges : list, optional
+        List of numeric boundaries for the value intervals.
+        Example: [0, 0.5, 1, 1.5]
+    value_colors : list, optional
+        List of colors corresponding to the intervals in value_ranges.
+        Length must be len(value_ranges) + 1.
+        Example: ["white", "blue", "green", "yellow", "black"]
+    """
+
+    min_value = np.nanmin(band)
+    max_value = np.nanmax(band)
+
+    height, width = band.shape
+    fig = plt.figure(figsize=(width/300, height/300), dpi=300)    
+    ax = plt.axes(projection=ccrs.PlateCarree())
+    ax.set_extent(extent, crs=ccrs.PlateCarree())
+
+    if value_ranges is not None and value_colors is not None:
+        # Ensure last bin catches everything above the last boundary
+        if value_ranges[-1] <= max_value:
+            boundaries = value_ranges + [max_value + 1e-6]
+        else:
+            boundaries = value_ranges
+        cmap = ListedColormap(value_colors)
+        norm = BoundaryNorm(boundaries, cmap.N)
+        img = ax.imshow(band, cmap=cmap, norm=norm,
+                        extent=extent, origin="upper")
+    else:
+        # Default continuous viridis
+        img = ax.imshow(band, cmap='viridis',
+                        vmin=np.round(min_value, 3),
+                        vmax=np.round(max_value, 3),
+                        extent=extent, origin="upper")
 
     plot_landmarks(ax, coast_clipped, gdf)
 
-    fig.colorbar(img, label=colorbar_label)
-    plt.title(title)
-    plt.savefig(outpath)
-    print(f"Tif plot saved as png to {outpath}.")
+    # Colorbar
+    cbar = fig.colorbar(img, ax=ax, shrink=0.7, pad=0.02)
+    cbar.set_label(colorbar_label, fontsize=7)
+    cbar.ax.tick_params(labelsize=6)
+    cbar.ax.yaxis.set_major_formatter(FormatStrFormatter("%.2f"))  # <-- 2 decimals
+    ax.tick_params(labelsize=6)
 
+    plt.title(title, fontsize=8)
+    plt.savefig(outpath, bbox_inches="tight", dpi=300)
+    plt.close()
+    print(f"Band plot saved as png to {outpath}.")
+
+
+def plot_single_tif_histogram(path, outpath, title, xlabel, ylabel):
+    with rasterio.open(path) as src:
+        band1 = src.read(1, masked=True) # remove NaN data
+        band1 = band1 
+
+    plot_single_band_histogram(band1, outpath, title, xlabel, ylabel)
+    
+    
+def plot_single_band_histogram(band, outpath, title, xlabel, ylabel):
+    min_value = np.nanmin(band)
+    max_value = np.nanmax(band)
+    print(f"Min pixel value: {min_value}, max pixel value: {max_value}")
+ 
     # Histogram of pixel values 
-    hist_outpath = os.path.splitext(outpath)[0] + "_histogram.png"
+    hist_outpath = os.path.splitext(outpath)[0] + ".png"
     plt.figure(figsize=(8, 4))
-    plt.hist(band1.flatten(), bins=50, color='skyblue', edgecolor='black')
-    plt.title(histogram_title)
-    plt.xlabel(colorbar_label)
-    plt.ylabel(hist_ylabel)
+    plt.hist(band.flatten(), bins=50, color='skyblue', edgecolor='black')
+    plt.title(title)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
     plt.grid(True, linestyle='--', alpha=0.5)
     plt.tight_layout()
     plt.savefig(hist_outpath)
     print(f"Tif pixel value histogram saved to {hist_outpath}.")
 
+
 if __name__=="__main__": 
     #plot_alltime_cloud_cover("data/Cloud_mask_mean_alltime_mixed.tif", "output/cloud_mask_mean_alltime_mixed.png")
-    #plot_monthly_cloud_cover("data/placeholder.tif", "output/cloud_mask_mean_monthly_mixed.png")
-    #plot_seasonal_cloud_cover("data/placeholder.tif", "output/cloud_mask_mean_seasonal_mixed.png")
-    plot_single_tif("data/surface_ghi_mean_July2020_scale_10.tif", 
-                    "output/surface_ghi_mean_July2020_scale_10.png", 
-                    "Total GHI at Surface Level (July 2020), 10m", 
-                    "GHI (W/m²)", 
-                    "Distribution of GHI values (W/m²) (July 2020, 10m)", 
-                    "Frequency")
+    """ monthly_file_dict = {
+        month_name : f"data/surface_ghi_mean_{month_name}_scale_10.tif"
+        for month_name in month_names
+    }
+    plot_monthly_cloud_cover(monthly_file_dict, "output/surface_ghi_monthly_scale_10.png",
+                             "Total GHI at Surface Level (2018-2025, 10m)", 
+                             "GHI (W/m²)", 
+                             "Distribution of GHI pixel values (W/m²), (2018-2025, 10m)",
+                             dpi=300)
+    
+    seasonal_files_dict = {
+        season: f"data/surface_ghi_mean_{season}_scale_10.tif"
+        for season in seasons
+    }
+    plot_seasonal_cloud_cover(seasonal_files_dict, "output/surface_ghi_seasonal_scale_10.png", 
+                              "Total GHI at Surface Level (2018-2025, 10m)",
+                              "GHI (W/m²)", 
+                              "Distribution of GHI pixel values (W/m²), (2018-2025, 10m)",
+                              dpi=300) """
+    plot_single_tif("data/S2_testfiles/S2_cloud_2018-08-05.tif", 
+                    "output/s2_2018-08-05.png", 
+                    "Cloud Mask", 
+                    "Cloud (binary)") 
+    plot_single_tif_histogram("data/S2_testfiles/S2_cloud_2018-07-28.tif", 
+                              "output/s2_2018-07-28_hist.png", 
+                              "Histogramm of pixel values", 
+                              "Pixel value",
+                              "Frequency")
     
