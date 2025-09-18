@@ -4,7 +4,7 @@ import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 
-from surface_GHI_model import load_image, get_hillshade_band, get_solar_angle, project_cloud_shadow
+from surface_GHI_model import load_image, get_hillshade_band, get_solar_angle, get_cloud_shadow_displacement
 
 
 class TestSurfaceGHIModel(unittest.TestCase):
@@ -106,7 +106,7 @@ class TestSurfaceGHIModel(unittest.TestCase):
             shadow_exp = np.zeros((100, 100), dtype=np.uint8)
             shadow_exp[case["expected_pos"]] = 1
 
-            shadow_res = project_cloud_shadow(
+            shadow_res = get_cloud_shadow_displacement(
                 cloud_mask,
                 case["solar_zenith"],
                 case["solar_azimuth"],

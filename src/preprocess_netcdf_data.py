@@ -5,38 +5,21 @@ import numpy as np
 import geopandas as gpd
 import math
 from functools import partial
+from tqdm import tqdm
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+import seaborn as sns
 import cartopy.crs as ccrs
 import cartopy.io.shapereader as shpreader
 import cartopy.feature as cfeature
 import cartopy.mpl.ticker as cticker
+from pathlib import Path
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-
-# Convert degree to radian
-def deg2rad(deg):
-    return deg * math.pi / 180
-
-# Define the center of the bounding box (Bergen, Norway)
-CENTER_LAT = 60.39
-CENTER_LON = 5.33
-
-# Approximate degree adjustments for 100km x 100km box
-DEG_LAT_TO_KM = 111.412  # 1 degree latitude at 60° converted to km (https://en.wikipedia.org/wiki/Latitude)
-DEG_LON_TO_KM = 111.317 * math.cos(deg2rad(CENTER_LAT))  # 1 degree longitude converted to km
-LAT_OFFSET = 12.5 / DEG_LAT_TO_KM  # ~12.5km north/south
-LON_OFFSET = 12.5 / DEG_LON_TO_KM  # ~12.5km east/west (varies with latitude, approximation)
-
-# Define the bounding box
-roi = {
-    "north": CENTER_LAT + LAT_OFFSET,
-    "south": CENTER_LAT - LAT_OFFSET,
-    "west": CENTER_LON - LON_OFFSET,
-    "east": CENTER_LON + LON_OFFSET
-}
+from surface_GHI_model import BBOX
 
 def inspect_file(filepath, variable_name):
     # open the netCDF file
-    ds = xr.open_dataset(filepath)
+    ds = xr.open_dataset(filepath, decode_times=False)
 
     print(ds)  # print an overview (variables, dimensions, attributes)
 
@@ -46,74 +29,10 @@ def inspect_file(filepath, variable_name):
     # inspect one variable, e.g. cloud mask
     variable = ds[variable_name]  # if present in file
     print(variable)
+    print(f" {variable_name} Values:")
+    print(variable.values)
 
-def merge_files_in_folder(folder, outpath):
-    """Merge all .nc files in folder into one .nc file. Save to outpath."""
-    # List all .nc files in the folder
-    files = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(".nc")])
-
-    print("Found files:", files)
-
-    # Open and combine them along time dimension
-    ds = xr.open_mfdataset(files, combine="by_coords")
-
-    # Save to new file
-    ds.to_netcdf(outpath)
-    print(f"Merged dataset saved to {outpath}")
-
-    
-def preprocess(ds, y_idx, x_idx):
-    return ds.isel(y=slice(y_idx.min(), y_idx.max()+1),
-                   x=slice(x_idx.min(), x_idx.max()+1))
-
-
-def crop_to_roi(filepattern, outpath, aux_filepath):
-    # Get ROI indices from aux file
-    aux = xr.open_dataset(aux_filepath, decode_times=False)
-    lat = aux['lat'].sel(georef_offset_corrected=1)
-    lon = aux['lon'].sel(georef_offset_corrected=1)
-    mask = (lat >= roi["south"]) & (lat <= roi["north"]) & \
-           (lon >= roi["west"]) & (lon <= roi["east"])
-    y_idx, x_idx = np.where(mask)
-
-    print("Number of ROI pixels:", len(y_idx))
-    print("Y indices range:", y_idx.min(), "-", y_idx.max())
-    print("X indices range:", x_idx.min(), "-", x_idx.max())
-
-    files = sorted(glob.glob(filepattern))
-    print(f"Found {len(files)} files")
-    if len(files) == 0:
-        raise RuntimeError("No files found matching pattern.")
-
-    t0 = time.time()
-
-    # Open template file lazily and crop to ROI
-    template = xr.open_dataset(files[0], engine="h5netcdf")
-    template_roi = preprocess(template, y_idx, x_idx)
-    template.close()  # free memory
-
-    # Open remaining files lazily and crop using indices
-    data_list = [template_roi]
-    for f in files[1:]:
-        ds = xr.open_dataset(f, engine="h5netcdf")
-        ds_roi = preprocess(ds, y_idx, x_idx)
-        data_list.append(ds_roi)
-        ds.close()
-
-    # Concatenate along time axis
-    ds_all = xr.concat(data_list, dim="time")
-
-    # Materialize
-    ds_all.load()
-    t1 = time.time()
-    print(f"Cropping and concatenating took {t1 - t0:.1f} seconds")
-
-    # Save cropped dataset
-    ds_all.to_netcdf(outpath)
-    size_after = os.path.getsize(outpath) / 1e6
-    print(f"Size after cropping: {size_after:.2f} MB")
-
-    
+       
 def cfc_diurnal_cycle_monthly(filepath):
     """Create a table that stores CFC (cloud cover fraction) values for function f(x,y,h,m) - for each 
     hour h, month m and for each pixel x,y."""
@@ -212,16 +131,415 @@ def visualize_peak_hour(filepath):
     plt.savefig(f"output/hour_max_cloud_cover_month_{month}.png", bbox_inches="tight")
     plt.close()
 
+def extract_clara_albedo(data_folder, output_csv, target_lon=5.33):
+    """
+    Loop over all CLARA SAL NetCDF files in a folder and extract 
+    black-, white-, blue-sky mean, median, and all-sky median albedo 
+    at given longitude.
+    
+    Parameters:
+        data_folder (str): folder containing all CLARA NetCDF files
+        output_csv (str): path to save resulting CSV
+        target_lon (float): longitude to extract data from
+    """
+    # Find all NetCDF files
+    file_list = sorted(glob.glob(os.path.join(data_folder, "*.nc")))
+    
+    records = []
 
+    for fpath in file_list:
+        ds = xr.open_dataset(fpath)
+
+        # Find index of closest longitude
+        lon_idx = np.argmin(np.abs(ds.lon.values - target_lon))
+
+        # Extract medians
+        blue_med  = ds["blue_sky_albedo_median"].isel(lon=lon_idx).values.flatten()[0]
+        black_med = ds["black_sky_albedo_median"].isel(lon=lon_idx).values.flatten()[0]
+        white_med = ds["white_sky_albedo_median"].isel(lon=lon_idx).values.flatten()[0]
+        blue_all_med  = ds["blue_sky_albedo_all_median"].isel(lon=lon_idx).values.flatten()[0]
+        black_all_med = ds["black_sky_albedo_all_median"].isel(lon=lon_idx).values.flatten()[0]
+        white_all_med = ds["white_sky_albedo_all_median"].isel(lon=lon_idx).values.flatten()[0]
+
+        # Extract means
+        blue_mean  = ds["blue_sky_albedo_mean"].isel(lon=lon_idx).values.flatten()[0]
+        black_mean = ds["black_sky_albedo_mean"].isel(lon=lon_idx).values.flatten()[0]
+        white_mean = ds["white_sky_albedo_mean"].isel(lon=lon_idx).values.flatten()[0]
+
+        # Extract date
+        date = pd.to_datetime(ds.time.values[0])
+
+        # Store record
+        records.append({
+            "date": date,
+            "blue_sky_albedo_median": blue_med,
+            "black_sky_albedo_median": black_med,
+            "white_sky_albedo_median": white_med,
+            "blue_sky_albedo_all_median": blue_all_med,
+            "black_sky_albedo_all_median": black_all_med,
+            "white_sky_albedo_all_median": white_all_med,
+            "blue_sky_albedo_mean": blue_mean,
+            "black_sky_albedo_mean": black_mean,
+            "white_sky_albedo_mean": white_mean
+        })
+
+        ds.close()  # Close file to free memory
+
+    # Build DataFrame
+    df = pd.DataFrame(records)
+    df.sort_values("date", inplace=True)
+    
+    # Save to CSV
+    df.to_csv(output_csv, index=False)
+    print(f"Saved albedo data to {output_csv}")
+    return df
+
+
+def plot_whole_time_series(df, variable_name, title, outpath):
+    """Plot the variable from the dataframe for the whole date range, set x-axis ticks for years and months only"""
+    # Plot variable over time
+    fig, ax = plt.subplots(figsize=(12, 5))
+
+    # Plot, automatically skipping NaNs
+    ax.plot(df["date"], df[variable_name], marker='o', linestyle='-', label=variable_name)
+
+    # Format x-axis for year-month
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=6))  # tick every 6 months
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+
+    # Rotate labels for readability
+    plt.xticks(rotation=45)
+
+    # Labels & title
+    ax.set_ylabel(variable_name)
+    ax.set_xlabel("Date")
+    ax.set_title(title)
+    ax.grid(True)
+    ax.legend()
+
+    plt.tight_layout()
+    plt.savefig(outpath, dpi = 150)
+    print(f"Figure saved to {outpath}")
+    
+
+def plot_monthly_mean_albedos(clara_csv, s5p_csv, outpath):
+    """
+    Aggregate CLARA albedo medians (blue, black, white) by month across all years.
+    Overlay monthly mean S5P surface albedo and number of observations per month.
+    """
+    # --- Step 1: Load CLARA data ---
+    df_clara = pd.read_csv(clara_csv, parse_dates=["date"])
+    df_clara["month"] = df_clara["date"].dt.month
+
+    # --- Step 2: Compute monthly means for CLARA ---
+    clara_means = df_clara.groupby("month")[
+        ["blue_sky_albedo_all_median", "black_sky_albedo_all_median", "white_sky_albedo_all_median"]
+    ].mean()
+    
+    clara_counts = df_clara.groupby("month")["blue_sky_albedo_all_median"].count()
+
+    # --- Step 3: Load S5P data ---
+    df_s5p = pd.read_csv(s5p_csv, parse_dates=["month_start"])
+    df_s5p["month"] = df_s5p["month_start"].dt.month
+
+    # Compute monthly mean S5P surface albedo
+    s5p_monthly_means = df_s5p.groupby("month")["mean_surface_albedo"].mean()
+
+    # --- Step 4: Plot ---
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+
+    # CLARA albedo curves
+    ax1.plot(clara_means.index, clara_means["blue_sky_albedo_all_median"], 
+             marker="o", linestyle="-", color="blue", label="Blue-sky median")
+    ax1.plot(clara_means.index, clara_means["black_sky_albedo_all_median"], 
+             marker="s", linestyle="--", color="black", label="Black-sky median")
+    ax1.plot(clara_means.index, clara_means["white_sky_albedo_all_median"], 
+             marker="^", linestyle=":", color="gray", label="White-sky median")
+
+    # S5P line
+    ax1.plot(s5p_monthly_means.index, s5p_monthly_means.values,
+             marker="d", linestyle="-.", color="green", label="S5P mean surface albedo")
+
+    # Axis labels
+    ax1.set_xlabel("Month")
+    ax1.set_ylabel("Mean surface albedo (fraction)")
+    ax1.set_title("Monthly mean surface albedo (CLARA 2015–2025 & S5P 2017–2025) (incl. snow/ice)")
+
+    # Month ticks
+    ax1.set_xticks(range(1, 13))
+    ax1.set_xticklabels(["Jan","Feb","Mar","Apr","May","Jun","Jul",
+                         "Aug","Sep","Oct","Nov","Dec"])
+    ax1.grid(True)
+    ax1.legend(loc="upper left")
+
+    # Secondary y-axis for number of CLARA observations
+    ax2 = ax1.twinx()
+    ax2.bar(clara_counts.index, clara_counts.values, 
+            alpha=0.3, color="orange", width=0.6, label="# obs CLARA")
+    ax2.set_ylabel("Number of observations")
+    ax2.legend(loc="upper right")
+
+    plt.tight_layout()
+    plt.savefig(outpath, dpi=150)
+    print(f"Figure saved to {outpath}.")
+    
+    return clara_means, clara_counts, s5p_monthly_means
+
+def merge_albedo_with_s2_table(s2_path="data/s2_cloud_cover_table_small_and_large.csv",
+                                        albedo_path="data/SAL_2015-2025.csv"):
+    """Add the timewise closest albedo observation to each cloud cover observations of sentinel 2. """
+    # Load S2 observations
+    s2_df = pd.read_csv(s2_path, parse_dates=["date"])
+
+    # Load CLARA blue-sky albedo
+    sal_df = pd.read_csv(albedo_path, parse_dates=["date"])
+
+    # Sort CLARA dataframe by date for merge_asof
+    sal_df = sal_df.sort_values("date")
+
+    # Merge S2 with nearest CLARA date
+    s2_df = pd.merge_asof(
+        s2_df.sort_values("date"),
+        sal_df[["date", "blue_sky_albedo_median"]],
+        on="date",
+        direction="nearest"  # choose the nearest date
+    )
+
+    # The resulting s2_df now has a new column 'blue_sky_albedo_median' corresponding to nearest CLARA date
+    print(s2_df.head())
+    return s2_df
+
+def plot_claas3_file(aux_path, claas3_file, var="cot"):
+    """Plot one variable of sample claas3 file with geo information."""
+    # Open the auxiliary file (lat/lon/acq_time live here)
+    aux = xr.open_dataset(aux_path, decode_times=False)
+
+    # Open the sample data file (cot lives here)
+    sample = xr.open_dataset(claas3_file)
+
+    # Extract variables
+    lat = aux["lat"].isel(georef_offset_corrected=0)   # (y, x)
+    lon = aux["lon"].isel(georef_offset_corrected=0)   # (y, x)
+    values = sample[var].isel(time=0)                   # (y, x)
+    
+    # Bounding box
+    lat_min, lat_max = 59.3802344451226, 60.50219617276416
+    lon_min, lon_max = 4.739101855653983, 5.920898144346017
+
+    # Build mask for bounding box
+    mask = ((lat >= lat_min) & (lat <= lat_max) &
+            (lon >= lon_min) & (lon <= lon_max))
+
+    # Apply mask (set values outside bounding box to NaN)
+    values_masked = values.where(mask)
+
+    
+    time_val = sample["time"].values[0]  # CF-compliant numeric time
+    acq_time = pd.to_datetime(str(time_val))  # convert to pandas datetime
+    acq_time_str = acq_time.strftime("%Y%m%dT%H%M%S")
+    print(f"acq_time_str: {acq_time_str}")
+
+    # Plot
+    plt.figure(figsize=(8,6))
+    im = plt.pcolormesh(lon, lat, values_masked, cmap="viridis")
+    plt.colorbar(im, label=f"{var}")
+    plt.xlabel("Longitude (degrees east)")
+    plt.ylabel("Latitude (degrees north)")
+    plt.title(f"{var}")
+    outpath=f"output/claas3_{var}_{acq_time_str}.png"
+    plt.savefig(outpath)
+    print(f"Saved figure to {outpath}.")
+
+def add_claas3_variable_to_cloud_cover_table(
+    claas_folderpath, aux_path, cloud_cover_path,
+    variable_name="cot", file_prefix="CPPin"
+): 
+    """
+    Iterate over CLAAS-3 files, read the .nc file, 
+    compute statistics for both large ROI and small ROI 
+    for a given variable (e.g. 'cot' or 'cth'), 
+    and save results back to the cloud cover table.
+
+    Parameters
+    ----------
+    claas_folderpath : str or Path
+        Root folder of CLAAS-3 dataset (contains year/month/day subfolders).
+    aux_path : str or Path
+        Path to auxiliary file containing lat/lon.
+    cloud_cover_path : str or Path
+        Path to cloud cover CSV table.
+    variable_name : str, optional
+        CLAAS-3 variable name to extract (e.g. "cot" or "cth").
+    file_prefix : str, optional
+        Filename prefix (e.g. "CPPin" for COT, "CTXin" for CTH).
+    """
+
+    # Read cloud cover table
+    cloud_cover = pd.read_csv(cloud_cover_path)
+    
+    # Open the auxiliary file (lat/lon live here)
+    aux = xr.open_dataset(aux_path, decode_times=False)
+    lat = aux["lat"].isel(georef_offset_corrected=0)   # (y, x)
+    lon = aux["lon"].isel(georef_offset_corrected=0)   # (y, x)
+    
+    # Bounding box small roi
+    lat_min, lat_max = BBOX["south"], BBOX["north"]
+    lon_min, lon_max = BBOX["west"], BBOX["east"]
+    mask_small = ((lat >= lat_min) & (lat <= lat_max) &
+                  (lon >= lon_min) & (lon <= lon_max))
+
+    # Define stats columns
+    suffixes = ["_large", "_small"]
+    base_stats = ["min", "max", "mean", "median", "std"]
+    stats_cols = [f"{variable_name}_{s}{suf}" for suf in suffixes for s in base_stats]
+
+    for col in stats_cols:
+        if col not in cloud_cover.columns:
+            cloud_cover[col] = np.nan
+
+    # Possible acquisition times in minutes
+    possible_times = [10*60+45, 11*60+0, 11*60+15]  # 645, 660, 675 minutes
+
+    # Iterate over rows 
+    for idx, row in tqdm(cloud_cover.iterrows(), total=len(cloud_cover), desc=f"Processing CLAAS-3 {variable_name} files"):         
+        dt = pd.to_datetime(row['system:time_start_large'], unit='ms', utc=True)
+
+        # Find closest reference time
+        t_minutes = dt.hour * 60 + dt.minute
+        closest_minutes = min(possible_times, key=lambda x: abs(x - t_minutes))
+        hhmm = f"{closest_minutes//60:02d}{closest_minutes%60:02d}"
+
+        # Construct CLAAS-3 filepath
+        year, month, day = dt.strftime("%Y"), dt.strftime("%m"), dt.strftime("%d")
+        search_pattern = f"{file_prefix}{year}{month}{day}{hhmm}*.nc"
+        path = Path(claas_folderpath, year, month, day).glob(search_pattern)
+        candidates = list(path)
+
+        if not candidates:
+            print(f"[WARN] No file found for {dt} (expected {search_pattern})")
+            continue
+    
+        claas3_file = candidates[0]
+    
+        try:
+            sample = xr.open_dataset(claas3_file)
+            var = sample[variable_name].isel(time=0)  # (y, x)
+
+            stats_all = {}
+
+            # --- Large ROI (all valid pixels) ---
+            vals_large = var.values
+            vals_large = vals_large[np.isfinite(vals_large)]
+            vals_large = vals_large[vals_large > 0.0]
+
+            if vals_large.size > 0:
+                stats_all.update({
+                    f"{variable_name}_min_large": np.nanmin(vals_large),
+                    f"{variable_name}_max_large": np.nanmax(vals_large),
+                    f"{variable_name}_mean_large": np.nanmean(vals_large),
+                    f"{variable_name}_median_large": np.nanmedian(vals_large),
+                    f"{variable_name}_std_large": np.nanstd(vals_large),
+                })
+            else:
+                stats_all.update({f"{variable_name}_{s}_large": np.nan for s in base_stats})
+
+            # --- Small ROI (apply mask) ---
+            vals_small = var.where(mask_small).values
+            vals_small = vals_small[np.isfinite(vals_small)]
+            vals_small = vals_small[vals_small > 0.0]
+
+            if vals_small.size > 0:
+                stats_all.update({
+                    f"{variable_name}_min_small": np.nanmin(vals_small),
+                    f"{variable_name}_max_small": np.nanmax(vals_small),
+                    f"{variable_name}_mean_small": np.nanmean(vals_small),
+                    f"{variable_name}_median_small": np.nanmedian(vals_small),
+                    f"{variable_name}_std_small": np.nanstd(vals_small),
+                })
+            else:
+                stats_all.update({f"{variable_name}_{s}_small": np.nan for s in base_stats})
+
+            # Assign back to DataFrame
+            for k, v in stats_all.items():
+                cloud_cover.at[idx, k] = v
+
+        except Exception as e:
+            print(f"[ERROR] Failed reading {claas3_file}: {e}")
+            continue
+
+    # Save new table
+    out_path = cloud_cover_path.replace(".csv", f"_with_{variable_name}.csv")
+    cloud_cover.to_csv(out_path, index=False)
+    print(f"Saved updated table to {out_path}.")
+    
+    # Print summary
+    print("\n=== Statistics summary ===")
+    print(cloud_cover[stats_cols].describe())
+    nan_counts = cloud_cover[stats_cols].isna().sum()
+    print("\n=== Number of NaNs per column ===")
+    print(nan_counts)
+    
+    all_nan_rows = cloud_cover[stats_cols].isna().all(axis=1)
+    problematic_rows = cloud_cover.loc[all_nan_rows, ["date", "cloud_cover_small", "cloud_cover_large"]]
+    print("\n=== Rows where all stats are NaN ===")
+    print(problematic_rows)
+
+    
+def compare_claas3_small_vs_large_roi(cloud_cover_filepath, selected_vars):
+    df = pd.read_csv(cloud_cover_filepath)
+
+    # Select relevant columns
+    df_selected = df[selected_vars].copy()
+
+    # Drop rows where both are NaN (no useful info)
+    df_selected = df_selected.dropna(how="all")
+
+    # Print correlation (Pearson and Spearman)
+    print("Correlation (Pearson):")
+    print(df_selected.corr(method="pearson"))
+    print("\nCorrelation (Spearman):")
+    print(df_selected.corr(method="spearman"))
+
+    # Scatter plot with regression line
+    plt.figure(figsize=(6,6))
+    sns.regplot(
+        data=df_selected,
+        x=selected_vars[0],
+        y=selected_vars[1],
+        scatter_kws={"alpha": 0.5},
+        line_kws={"color": "red"}
+    )
+    plt.xlabel(selected_vars[0] + " Small Roi")
+    plt.ylabel(selected_vars[1])
+    plt.title(f"Scatter plot of {selected_vars[0]} (small vs large ROI)")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    outpath = f"output/{selected_vars[0]}_small_vs_large_scatter.png"
+    plt.savefig(outpath)
+    print(f"Saved scatterplot to {outpath}.")
+    
 
 if __name__ == "__main__":
-    filepath = "data/claas-3_2018-2020/CMAin20180802134500405SVMSG01UD.nc"
-    filepath_comet2 = "data/comet2_all/CFChm202007011000002231000101MA.nc"
-    aux_file = "data/claas-3_2018-2020/CM_SAF_CLAAS3_L2_AUX.nc"
-    outpath = "data/claas-3_2018-2020/cma_2018-2020.nc"
-    merge_files_in_folder("data/claas-3_2018-2020/monthly_cropped",outpath)
-
-    inspect_file(outpath, "cma")
+    sample_file = "data/claas3_201506-2025-08/claas3/cpp/2020/05/04/CPPin20200504110000405SVMSG01MD.nc"
+    aux_file = "data/claas3_201506-2025-08/claas3/CM_SAF_CLAAS3_L2_AUX.nc"
+    data_folder = "data/CLARA_SAL_2015-2025"
+    clara_csv = "data/CWP_2015-2025.csv"
+    claas_folder_cpp = "data/claas3_201506-2025-08/claas3/cpp"
+    claas_folder_ctx = "data/claas3_201506-2025-08/claas3/ctx"
+    s2_csv = "data/s2_cloud_cover_table_small_and_large_with_cot_with_cth.csv"
+       
+    add_claas3_variable_to_cloud_cover_table(claas_folder_cpp, aux_file, s2_csv, 
+                                             variable_name="cph", file_prefix="CPPin")
+    
+    #df_albedo = extract_clara_albedo(data_folder, clara_csv, target_lon=5.33)
+    #df_albedo = pd.read_csv(clara_csv, parse_dates=["date"])
+    #print(df_albedo[["black_sky_albedo_median", "black_sky_albedo_all_median"]].describe())
+    s5p_csv = "data/s5p_monthly_mean_surface_albedo.csv"
+    outpath = "output/monthly_mean_albedo_comparison_incl_snow.png"
+    
+    #inspect_file(sample_file, "cph")
+    #plot_claas3_file(aux_file, sample_file, "cth")
+    #plot_monthly_mean_albedos(clara_csv=clara_csv, s5p_csv=s5p_csv, outpath=outpath)
     #crop_to_roi("data/claas-3_test/*.nc", "data/claas-3_test_small_roi.nc", aux_filepath = aux_file)
     #cfc_diurnal_cycle_monthly("data/comet2_roi_month.nc")
     #visualize_peak_hour("data/comet2_roi_month.nc")
