@@ -2,15 +2,20 @@ import unittest
 import numpy as np
 import pandas as pd
 import rasterio
+import xarray as xr
+import rioxarray
+
+from pathlib import Path
 import sys
 from datetime import datetime
 from netCDF4 import Dataset
 import os
 import shutil
-sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
+#sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 
-from surface_GHI_model import load_image, get_solar_angle, get_cloud_shadow_displacement
-from surface_GHI_model import calculate_sw_dir_cor, project_cloud_shadow, BBOX, get_closest_lut_entry
+from src.model.surface_GHI_model import load_image, get_solar_angle, get_cloud_shadow_displacement
+from src.model.surface_GHI_model import calculate_sw_dir_cor, project_cloud_shadow, BBOX
+from src.model.surface_GHI_model import get_closest_lut_entry
 
 class TestSurfaceGHIModel(unittest.TestCase):
     def setUp(self):
@@ -93,6 +98,53 @@ class TestSurfaceGHIModel(unittest.TestCase):
         # Remove created files and test directory
         if os.path.exists(self.test_dir):
             shutil.rmtree(self.test_dir)
+            
+    def test_resample_alignment(self):
+        """Test resampling of sw_dir_cor (NetCDF) to cloud mask (GeoTIFF) grid."""
+
+        # --- Load NetCDF ---
+        nc_file = Path("data/processed/sw_cor/sw_cor_bergen.nc")
+        ds = xr.open_dataset(nc_file)
+        # take first timestep
+        sw_dir_cor = ds["sw_dir_cor"].isel(time=0)
+
+        # --- Load GeoTIFF ---
+        tif_file = Path("data/raw/S2_cloud_mask_large/S2_cloud_mask_large_2015-08-08_11-00-36-2015-08-08_11-01-17.tif")
+        with rasterio.open(tif_file) as src:
+            shadow_mask = src.read(1)
+            shadow_meta = src.profile
+            shadow_bounds = src.bounds
+            shadow_transform = src.transform
+
+        # --- Resample ---
+        sw_dir_cor_resampled = resample(sw_dir_cor, shadow_meta)
+
+        # --- Check shape ---
+        self.assertEqual(
+            sw_dir_cor_resampled.shape,
+            shadow_mask.shape,
+            msg="Shapes after resampling should match exactly"
+        )
+
+        # --- Check extent ---
+        # rioxarray stores bounds in .rio.bounds()
+        nc_bounds = sw_dir_cor_resampled.rio.bounds()
+        self.assertAlmostEqual(nc_bounds[0], shadow_bounds.left, places=6, msg="West bound mismatch")
+        self.assertAlmostEqual(nc_bounds[1], shadow_bounds.bottom, places=6, msg="South bound mismatch")
+        self.assertAlmostEqual(nc_bounds[2], shadow_bounds.right, places=6, msg="East bound mismatch")
+        self.assertAlmostEqual(nc_bounds[3], shadow_bounds.top, places=6, msg="North bound mismatch")
+
+        # --- Check center ---
+        shadow_center = ((shadow_bounds.left + shadow_bounds.right) / 2,
+                         (shadow_bounds.bottom + shadow_bounds.top) / 2)
+        nc_center = ((nc_bounds[0] + nc_bounds[2]) / 2,
+                     (nc_bounds[1] + nc_bounds[3]) / 2)
+        self.assertAlmostEqual(shadow_center[0], nc_center[0], places=6, msg="Center longitude mismatch")
+        self.assertAlmostEqual(shadow_center[1], nc_center[1], places=6, msg="Center latitude mismatch")
+
+        # --- Optional: check max lat/lon values ---
+        self.assertAlmostEqual(sw_dir_cor_resampled.rio.bounds()[2], shadow_bounds.right, places=6)
+        self.assertAlmostEqual(sw_dir_cor_resampled.rio.bounds()[3], shadow_bounds.top, places=6)
             
     def test_get_closest_lut_entry(self):
         """Test that correct values from lut are returned."""

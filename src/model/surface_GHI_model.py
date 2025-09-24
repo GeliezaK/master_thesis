@@ -21,17 +21,13 @@ import os
 import numpy as np
 from scipy.ndimage import shift
 import pandas as pd
-import matplotlib as mpl
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
-import matplotlib.colors as colors
 import math
 from time import time
 import pvlib  # for solar position
 from skyfield.api import load, wgs84
-from datetime import datetime, timezone, timedelta
 from rasterio.plot import show
-from plotting.high_res_maps import plot_landmarks, plot_single_band, plot_single_band_histogram, plot_single_tif
+from src.plotting.high_res_maps import plot_landmarks, plot_single_band, plot_single_band_histogram, plot_single_tif
 
 # Define the center of the bounding box (Bergen, Norway)
 CENTER_LAT = 60.39
@@ -305,98 +301,6 @@ def calculate_sw_dir_cor(
 
     return out_file
     
-    
-def plot_sw_cor_for_timestep(sw_cor_file, elevation_file, ind=10):
-    """Plot elevation the shortwave correction factor for a specific timestep"""
-
-    # Load sw cor data
-    ds = xr.open_dataset(sw_cor_file)
-    sw_dir_cor = ds["sw_dir_cor"][ind, :, :].values
-    timestamp = ds["time"].isel(time=ind).values
-    lat = ds["lat"].values
-    lon = ds["lon"].values
-    sun_x = ds["sun_x"].values[ind]
-    sun_y = ds["sun_y"].values[ind]
-    sun_z = ds["sun_z"].values[ind]
-    ds.close()
-    timestamp = datetime.fromtimestamp(timestamp.astype("datetime64[s]").astype(int), tz=timezone.utc)
-    print("timestamp date: ", timestamp)
-    sun_alt = np.degrees(np.arcsin(sun_z / np.sqrt(sun_x**2 + sun_y**2 + sun_z**2)))
-    sun_az  = np.degrees(np.arctan2(sun_x, sun_y))
-    print(f"Sun altitude: {np.round(sun_alt,2)}, sun azimuth: {np.round(sun_az,2)}")
-    
-    zenith, azimuth = get_solar_angle(timestamp)
-    print(f"Solar angles from pvlib: alt: {np.round(90-zenith,2)}, azimuth: {np.round(azimuth,2)} ")
-    
-    # Load elevation data 
-    with rasterio.open(elevation_file) as src:
-        dsm = src.read(1)  # first band
-
-    elevation_ortho = np.ascontiguousarray(dsm)
-    
-    # Plot
-    ax_lim = (lon.min(), lon.max(),
-            lat.min(), lat.max())
-    fig = plt.figure(figsize=(10, 12))
-    gs = gridspec.GridSpec(2, 2, left=0.1, bottom=0.1, right=0.9, top=0.9,
-                        hspace=0.05, wspace=0.05, width_ratios=[1.0, 0.027])
-    ax = plt.subplot(gs[0, 0])
-    ax.set_facecolor(plt.get_cmap("terrain")(0.15)[:3] + (0.25,))
-    
-    # mask lov elevation (water)
-    masked_elev = np.ma.masked_where(elevation_ortho < 0.5, elevation_ortho)
-    levels = np.arange(0.0, 800.0, 50.0)
-    cmap_terrain = colors.LinearSegmentedColormap.from_list(
-        "terrain", plt.get_cmap("terrain")(np.linspace(0.25, 1.0, 100))
-    )
-    cmap = colors.ListedColormap(['blue'] + list(cmap_terrain(np.linspace(0,1,100))))
-    norm = colors.BoundaryNorm(np.concatenate(([0, 0.5], levels[1:])), cmap.N, extend='max')
-    #data_plot = np.ma.masked_where(mask_ocean[slice_in], elevation_ortho)
-    plt.pcolormesh(lon, lat, elevation_ortho,
-                cmap=cmap, norm=norm)
-    x_ticks = np.arange(np.nanmin(lon), np.nanmax(lon), 0.05)
-    plt.xticks(x_ticks, ["" for i in x_ticks])
-    y_ticks = np.arange(np.nanmin(lat), np.nanmax(lat), 0.02)
-    plt.yticks(y_ticks, ["%.2f" % np.abs(i) + r"$^{\circ}$S" for i in y_ticks])
-    plt.axis(ax_lim)
-    ax = plt.subplot(gs[0, 1])
-    mpl.colorbar.ColorbarBase(ax, cmap=cmap, norm=norm, orientation="vertical")
-    plt.ylabel("Elevation [m a.s.l.]", labelpad=10.0)
-    ax = plt.subplot(gs[1, 0])
-    vmax = np.nanmax(sw_dir_cor)
-    levels = np.arange(0.0, 2.25, 0.25)
-    ticks = np.arange(0.0, 2.5, 0.5)
-    cmap = plt.get_cmap("viridis")
-    norm = mpl.colors.BoundaryNorm(levels, ncolors=cmap.N, extend="max")
-    plt.pcolormesh(lon, lat, sw_dir_cor,
-                cmap=cmap, norm=norm)
-    plt.xticks(x_ticks, ["%.2f" % np.abs(i) + r"$^{\circ}$W" for i in x_ticks])
-    plt.yticks(y_ticks, ["%.2f" % np.abs(i) + r"$^{\circ}$S" for i in y_ticks])
-    plt.axis(ax_lim)
-    txt = timestamp.strftime("%Y-%m-%d %H:%M:%S") + " UTC"
-    t = plt.text(0.835, 0.935, txt, fontsize=11, fontweight="bold",
-                horizontalalignment="center", verticalalignment="center",
-                transform=ax.transAxes)
-    t.set_bbox(dict(facecolor="white", alpha=0.8, edgecolor="none"))
-    #ts = load.timescale()
-    #astrometric = loc_or.at(ts.from_datetime(timestamp).observe(sun)
-    #alt, az, d = astrometric.apparent().altaz()
-    txt = "Mean solar elevation angle: %.1f" % sun_alt + "$^{\circ}$"
-    t = plt.text(0.21, 0.06, txt, fontsize=11, fontweight="bold",
-                horizontalalignment="center", verticalalignment="center",
-                transform=ax.transAxes)
-    t.set_bbox(dict(facecolor="white", alpha=0.8, edgecolor="none"))
-    ax = plt.subplot(gs[1, 1])
-    mpl.colorbar.ColorbarBase(ax, cmap=cmap, norm=norm, ticks=ticks,
-                            orientation="vertical")
-    plt.ylabel("${\downarrow}SW_{dir}$ correction factor [-]", labelpad=10.0)
-    ts_str = timestamp.strftime("%Y-%m-%d_%H-%M-%S")
-    outpath = f"data/processed/sw_cor/Elevation_sw_dir_cor_{ts_str}.png"
-    fig.savefig(outpath, dpi=300,
-                bbox_inches="tight")
-    print(f"Saved elevation and sw dir plot to {outpath}.")
-    plt.close(fig)
-
 
 def get_cloud_shadow_displacement(solar_zenith, solar_azimuth,
                          cbh_m, sat_zenith=0.0, sat_azimuth=0.0,
@@ -500,7 +404,7 @@ def project_cloud_shadow(filepath, dy_pix, dx_pix, bbox):
         col_off:col_off + width
     ]
 
-    return roi_mask
+    return roi_mask, transform
 
 
 def simulate_annual_ghi():
@@ -670,18 +574,52 @@ def get_cloud_properties(row, monthly_medians, verbose=False):
         print(f"cloud props: COT {COT:.2f}, CTH {CTH:.2f}, CPH {CPH}")
     return COT, CTH, CPH
 
+def nc_to_raster_meta(ds):
+    lat = ds["lat"].values
+    lon = ds["lon"].values
+    var = ds["sw_dir_cor"].isel(time=0).values
+    
+    nrows, ncols = var.shape[-2], var.shape[-1]
+
+    # Assuming regular lat/lon grid
+    res_lon = (lon[-1] - lon[0]) / (ncols - 1)
+    res_lat = (lat[-1] - lat[0]) / (nrows - 1)
+
+    # Top-left origin transform
+    transform = from_origin(lon.min(), lat.max(), res_lon, abs(res_lat))
+
+    return transform, (nrows, ncols), (lon.min(), lat.max(), lon.max(), lat.min())
+
+
+def reproject_shadow_to_nc(shadow_mask, shadow_transform, nc_transform, nc_shape):
+    dst = np.zeros(nc_shape, dtype=np.uint8)
+
+    reproject(
+        source=shadow_mask,
+        destination=dst,
+        src_transform=shadow_transform,
+        src_crs="EPSG:4326",       # or the CRS of your GeoTIFF
+        dst_transform=nc_transform,
+        dst_crs="EPSG:4326",       # or CRS of your NetCDF
+        resampling=Resampling.nearest
+    )
+    return dst 
 
 
 def total_ghi_from_sat_imgs(sat_cloud_mask_filepath, cloud_cover_filepath, LUT_filepath,
                             sw_cor_path, 
                             outpath,
-                            mixed_threshold, overcast_threshold):
+                            mixed_threshold, overcast_threshold, verbose = False):
     """For each observation in cloud_cover_filepath, classify into overcast/mixed/clear weather and get 
     the correct LUT entry for the whole map (overcast/clear) or for each pixel (mixed). Output is the total ghi
     over all satellite files per pixel."""
     
+    # -----------------------------------------------------------------------------
+    # Initialize variables
+    # -----------------------------------------------------------------------------
+
     # Read cloud_cover table
-    cloud_props = pd.read_csv(cloud_cover_filepath, skiprows=range(1,100), nrows=300) #nrows just for debugging
+    cloud_props = pd.read_csv(cloud_cover_filepath, skiprows=range(1,150), nrows=30) #nrows just for debugging
     # Ensure "date" is parsed as datetime
     cloud_props["date"] = pd.to_datetime(cloud_props["date"], format="%Y-%m-%d")
     cloud_props["month"] = cloud_props["date"].dt.month
@@ -692,8 +630,9 @@ def total_ghi_from_sat_imgs(sat_cloud_mask_filepath, cloud_cover_filepath, LUT_f
         .median()
         .reset_index()
     )
-
-    print(monthly_medians)
+    
+    # Set the same value for surface albedo, independent of time
+    surface_albedo = cloud_props["blue_sky_albedo_median"].mean()
     
     # Get default viewing angles to fill for missing data 
     median_sat_zen = cloud_props["MEAN_ZENITH"].median()
@@ -701,8 +640,9 @@ def total_ghi_from_sat_imgs(sat_cloud_mask_filepath, cloud_cover_filepath, LUT_f
     
     # Read LUT 
     lut = pd.read_csv(LUT_filepath)
-    variables = ["DOY", "Hour", "Albedo", "Altitude_km", "CloudTop_km", "Tau550", "CloudType"]
+    
     # Get unique LUT key variables
+    variables = ["DOY", "Hour", "Albedo", "Altitude_km", "CloudTop_km", "Tau550", "CloudType"]
     unique_values = {}
     
     for var in variables:
@@ -713,18 +653,18 @@ def total_ghi_from_sat_imgs(sat_cloud_mask_filepath, cloud_cover_filepath, LUT_f
     # Get times of shortwave direct correction factors      
     ds = xr.open_dataset(sw_cor_path)
     sw_cor_times = ds["time"].values  # dtype=datetime64[ns]
-    sw_cor_shape = ds["sw_dir_cor"][0, :, :].values.shape #(2501, 5061)
-
-    count_clear = 0
-    count_overcast = 0
-    count_mixed = 0
     
+    # Save lat/lon info
+    lat = ds["lat"].values
+    lon = ds["lon"].values
+
+    ghi_results = []
+    time_results = []
     
     # Iterate over df rows
-    for idx, row in cloud_props.iterrows():
+    for idx, row in tqdm(cloud_props.iterrows(), total=len(cloud_props), desc="Processing rows"):        
         cloud_cover_large = row["cloud_cover_large"]
         # Get SAL, DOY, hour
-        surface_albedo = cloud_props["blue_sky_albedo_median"].mean()
         dt = pd.to_datetime(row['system:time_start_large'], unit='ms', utc=True)
         doy = dt.timetuple().tm_yday
         hour = dt.hour + round(dt.minute / 60)
@@ -732,62 +672,44 @@ def total_ghi_from_sat_imgs(sat_cloud_mask_filepath, cloud_cover_filepath, LUT_f
 
         # Classify into clear, mixed, overcast weather 
         if cloud_cover_large <= mixed_threshold:
-            #count_clear += 1
-            # ------------------------ Case 1: Clear Sky Type ---------------------------#            
+            # -----------------------------------------------------------------------------
+            # Case 1: Clear Sky Type
+            # -----------------------------------------------------------------------------
+
             res_dict = get_closest_lut_entry(lut, unique_values, 
                                              doy, hour, surface_albedo, altitude)
             direct_clear = res_dict["direct_clear"]
             diffuse_clear = res_dict["diffuse_clear"]
             if direct_clear is None or diffuse_clear is None:
-                total_ghi = None
                 print("Total GHI: None (missing clear component).")
                 continue
-            else:
-                total_ghi = direct_clear + diffuse_clear
-                #print(f"Total GHI: {total_ghi:.1f} ({direct_clear:.1f} direct + {diffuse_clear:.1f} diffuse).")
-            
+                       
             # Get shortwave correction factor
             idx = get_sw_cor_idx(sw_cor_times, dt)
             sw_dir_cor = ds["sw_dir_cor"].isel(time=idx).values
             
             # Calculate GHI_total 
             GHI_total = sw_dir_cor * direct_clear + diffuse_clear
-            
-            if count_clear % 7 == 1: 
-                timestamp_str = dt.strftime("%Y%m%dT%H%M%S")
-
-                values = [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 2000, 3000]
-
-                colors = ["black", "darkblue", "mediumblue", "blueviolet", "purple", "mediumvioletred",
-                          "crimson", "deeppink", "salmon", "orangered", "darkorange", "orange", "yellow"]
-
-                plot_single_band(GHI_total, f"output/ghi_total_{timestamp_str}.png", 
-                        f"GHI Total for {timestamp_str}",
-                        "GHI (W/m²)", values, colors)
-
-            # Save to outpath
-    
+               
         elif cloud_cover_large >= overcast_threshold:
-            #count_overcast += 1
-            #----------------------- Case 2 : Overcast Sky Type -------------------#
+            # -----------------------------------------------------------------------------
+            # Case 2: Overcast Sky Type
+            # -----------------------------------------------------------------------------
+            
             # Get COT, CTH, CPH
-            COT, CTH, CPH = get_cloud_properties(row, monthly_medians, verbose=True)
+            COT, CTH, CPH = get_cloud_properties(row, monthly_medians, verbose=verbose)
             res_dict = get_closest_lut_entry(lut, unique_values, 
                                              doy, hour, surface_albedo, altitude,
-                                             CTH, COT, CPH, verbose=True)
+                                             CTH, COT, CPH, verbose=verbose)
             
             # Get total GHI
             direct_cloudy = res_dict["direct_cloudy"]
             diffuse_cloudy = res_dict["diffuse_cloudy"]
             
             if direct_cloudy is None or diffuse_cloudy is None:
-                total_ghi = None
                 print("Total GHI: None (missing cloudy component).")
                 continue
-            else:
-                total_ghi = direct_cloudy + diffuse_cloudy
-                #print(f"Total GHI: {total_ghi:.1f} ({direct_cloudy:.1f} direct + {diffuse_cloudy:.1f} diffuse).")
-                
+                           
             # Get shortwave correction factor
             idx = get_sw_cor_idx(sw_cor_times, dt)
             sw_dir_cor = ds["sw_dir_cor"].isel(time=idx).values
@@ -795,22 +717,10 @@ def total_ghi_from_sat_imgs(sat_cloud_mask_filepath, cloud_cover_filepath, LUT_f
             # Calculate GHI_total 
             GHI_total = sw_dir_cor * direct_cloudy + diffuse_cloudy
             
-            if count_overcast % 12 == 1: 
-                timestamp_str = dt.strftime("%Y%m%dT%H%M%S")
-
-                values = [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 2000, 3000]
-
-                colors = ["black", "darkblue", "mediumblue", "blueviolet", "purple", "mediumvioletred",
-                          "crimson", "deeppink", "salmon", "orangered", "darkorange", "orange", "yellow"]
-
-                plot_single_band(GHI_total, f"output/ghi_total_{timestamp_str}.png", 
-                        f"GHI Total for {timestamp_str}",
-                        "GHI (W/m²)", values, colors)
-
-
         elif mixed_threshold < cloud_cover_large < overcast_threshold:
-            count_mixed += 1
-            #----------------------- Case 3 : Mixed Sky Type -------------------#
+            # -----------------------------------------------------------------------------
+            # Case 3: Mixed Sky Type
+            # -----------------------------------------------------------------------------
             
             # Get cloud mask image path
             date = dt.strftime("%Y-%m-%d")
@@ -823,10 +733,11 @@ def total_ghi_from_sat_imgs(sat_cloud_mask_filepath, cloud_cover_filepath, LUT_f
                 raise RuntimeError(f"Multiple files found for pattern: {pattern}\n{files}")
 
             cloud_mask_path = files[0]
-            print(f"Identified cloud mask: {cloud_mask_path}")
+            if verbose:
+                print(f"Identified cloud mask: {cloud_mask_path}")
             
             # Calculate shadow 
-            COT, CTH, CPH = get_cloud_properties(row, monthly_medians, verbose=True)
+            COT, CTH, CPH = get_cloud_properties(row, monthly_medians, verbose=verbose)
             solar_zenith, solar_azimuth = get_solar_angle(dt)
             
             if solar_zenith > 80:
@@ -844,17 +755,15 @@ def total_ghi_from_sat_imgs(sat_cloud_mask_filepath, cloud_cover_filepath, LUT_f
             
             dx_pix, dy_pix = get_cloud_shadow_displacement(solar_zenith, solar_azimuth, cbh_m, 
                                        sat_zenith, sat_azimuth, pixel_size = 10, cloud_top_height=cth_m,
-                                       verbose=True)
-            shadow_mask = project_cloud_shadow(cloud_mask_path, dy_pix, dx_pix, BBOX)
-            print(f"Shape of shadow mask: {shadow_mask.shape}")
+                                       verbose=verbose)
+            shadow_mask, shadow_transform = project_cloud_shadow(cloud_mask_path, dy_pix, dx_pix, BBOX)
             
             # Get closest LUT 
             res_dict = get_closest_lut_entry(lut, unique_values, 
                                              doy, hour, surface_albedo, altitude,
-                                             CTH, COT, CPH, verbose=True)
+                                             CTH, COT, CPH, verbose=verbose)
             
             if any(value is None for value in res_dict.values()):
-                total_ghi = None
                 print("Total GHI: None (missing components).")
                 continue
             
@@ -863,128 +772,86 @@ def total_ghi_from_sat_imgs(sat_cloud_mask_filepath, cloud_cover_filepath, LUT_f
             diffuse_clear = res_dict["diffuse_clear"]
             direct_cloudy = res_dict["direct_cloudy"]
             diffuse_cloudy = res_dict["diffuse_cloudy"]
-            #print(f"Total GHI cloudy: {total_ghi_cloudy:.1f} ({direct_cloudy:.1f} direct + {diffuse_cloudy:.1f} diffuse).")
-            #print(f"Total GHI clear: {total_ghi_clear:.1f} ({direct_clear:.1f} direct + {diffuse_clear:.1f} diffuse).")
-                
+                         
             # Get shortwave correction factor
             idx = get_sw_cor_idx(sw_cor_times, dt)
             sw_dir_cor = ds["sw_dir_cor"].isel(time=idx).values
             
-            # TODO: this is just a quick fix; ensure the shapes match according to location! 
+            # TODO: this is just a simple fix; ensure the shapes match according to location!
+            # The shapes don't match exactly, there is 1 pixel more in y direction and 2 pixels
+            # more in x direction in sw_dir_cor. This is due to the different origins: sw_dir_cor
+            # stems from DSM tif-file (Hoydedata) and shadow mask is produced from cloud mask (Sentinel-2) 
+
+            # Pad shadow mask to get shape of sw_dir_cor
             nrows, ncols = shadow_mask.shape
-            sw_dir_cor = sw_dir_cor[:nrows, :ncols]
- 
+            target_rows, target_cols = sw_dir_cor.shape
+
+            pad_rows = target_rows - nrows
+            pad_cols = target_cols - ncols
+
+            if pad_rows < 0 or pad_cols < 0:
+                raise ValueError(f"Shadow mask is larger than sw_dir_cor: "
+                                f"shadow {shadow_mask.shape}, sw_dir_cor {sw_dir_cor.shape}")
+
+            # Pad at bottom and right edges
+            shadow_mask = np.pad(
+                shadow_mask,
+                pad_width=((0, pad_rows), (0, pad_cols)),
+                mode="constant",
+                constant_values=False
+            )    
+                    
             # If in cloud shadow, set direct = direct_cloudy, diffuse = diffuse_cloudy, else to _clear
             direct = np.where(shadow_mask, direct_cloudy, direct_clear)
             diffuse = np.where(shadow_mask, diffuse_cloudy, diffuse_clear)
 
             # Compute total GHI per pixel
             GHI_total = sw_dir_cor * direct + diffuse
-
-            if count_mixed % 2 == 1: 
-                timestamp_str = dt.strftime("%Y%m%dT%H%M%S")
-
-                values = [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 2000, 3000]
-
-                colors = ["black", "darkblue", "mediumblue", "blueviolet", "purple", "mediumvioletred",
-                          "crimson", "deeppink", "salmon", "orangered", "darkorange", "orange", "yellow"]
-
-                plot_single_band(GHI_total, f"output/ghi_total_mixed_{timestamp_str}.png", 
-                        f"GHI Total for Mixed Sky Type {timestamp_str} (COT = {COT:.1f}, CTH = {CTH:.3f}km, CPH = {CPH})",
-                        "GHI (W/m²)", values, colors) 
-            
-            # Return outpath
+                                    
         else : 
-            print(f"Model not implemented for cloud_cover_large {cloud_cover_large}.")
+            raise ValueError(f"Model not implemented for cloud_cover_large {cloud_cover_large}.")
+            
+        if 'GHI_total' in locals() and GHI_total is not None:
+            # Ensure dimensions match
+            if GHI_total.shape == (len(lat), len(lon)):
+                ghi_results.append(GHI_total)
+                time_results.append(dt)
+            else:
+                print(f"Skipping time {dt}, shape mismatch: {GHI_total.shape}")
+        
     ds.close()
 
-    pass 
+    if len(ghi_results) == 0:
+        print("No GHI maps created, skipping NetCDF export.")
+        return
+    
+    # Convert to naive datetime (remove tzinfo) before casting
+    time_results = [pd.Timestamp(t).tz_convert(None) if pd.Timestamp(t).tzinfo else pd.Timestamp(t)
+                for t in time_results]
+    # Convert time to np.datetime64[ns]
+    time_results = np.array(time_results, dtype="datetime64[ns]")
 
+    # Stack into xarray DataArray
+    ghi_da = xr.DataArray(
+        data=np.stack(ghi_results, axis=0),
+        dims=["time", "lat", "lon"],
+        coords={"time": time_results, "lat": lat, "lon": lon},
+        name="GHI_total"
+    )
 
-def cloud_mask_to_ghi(sat_cloud_mask_img, GHI_direct_clear, GHI_direct_cloudy, GHI_diffuse_clear, GHI_diffuse_cloudy):
-    """Given a satellite cloud mask image, get the GHI at each pixel."""
-    pass
+    # Create Dataset
+    ghi_ds = xr.Dataset({"GHI_total": ghi_da})
 
-def analyze_cloud_shadow_displacement(cloud_cover_table_path, cth): 
-    """Get cloud shadow displacement in x and y direction for each observation in cloud_cover table.
-    Plot the distribution of displacements."""
-    cloud_cover = pd.read_csv(cloud_cover_table_path)
-    
-    displacement_x = []
-    displacement_y = []
-    
-    for idx, row in cloud_cover.iterrows():
-        sat_zenith = row["MEAN_ZENITH"]
-        sat_azimuth = row["MEAN_AZIMUTH"]
-        cth_small = row["cth_median_small"]
-        cth_large = row["cth_median_large"]
-        if cth_small is not None: 
-            cth = cth_small
-        elif cth_large is not None: 
-            cth = cth_large
-        
-        # Get date 
-        dt = pd.to_datetime(row['system:time_start_large'], unit='ms', utc=True)
-        solar_zenith, solar_azimuth = get_solar_angle(dt)
-        
-        if solar_zenith < 80:
-            dx_pix, dy_pix = get_cloud_shadow_displacement(solar_zenith, solar_azimuth, 0, 
-                                        sat_zenith, sat_azimuth, pixel_size = 10, cloud_top_height=cth)
-            
-            dx = dx_pix * 10 
-            dy = dy_pix * 10 
-            
-            #print(f"Displacement for sol_zen {solar_zenith:.1f}, sol_azi {solar_azimuth:.1f}, " \
-            #    f"sat_zen {np.round(sat_zenith,1)}, sat_azi {np.round(sat_azimuth,1)} (Time UTC: {dt}) : " \
-            #        f"\ndx = {np.round(dx)}, dy = {np.round(dy)}")
-            
-            displacement_x.append(dx)
-            displacement_y.append(dy)
-    
-    # Plot hist of displacement x and y 
-    # Convert to arrays
-    displacement_x = np.array(displacement_x)
-    displacement_y = np.array(displacement_y)
-    
-    # Remove NaNs
-    displacement_x = displacement_x[~np.isnan(displacement_x)]
-    displacement_y = displacement_y[~np.isnan(displacement_y)]
-    
-    print(f"Number of observations: {len(displacement_x)}")
-    
-    # Compute percentiles safely
-    x_percentiles = np.nanpercentile(displacement_x, [25, 50, 75]) if displacement_x.size > 0 else [np.nan]*3
-    y_percentiles = np.nanpercentile(displacement_y, [25, 50, 75]) if displacement_y.size > 0 else [np.nan]*3
-    
-    # Plot histograms
-    plt.figure(figsize=(10,6))
-    bins = 30  
-    
-    plt.hist(displacement_x, bins=bins, alpha=0.5, color="tab:blue", label="dx")
-    plt.hist(displacement_y, bins=bins, alpha=0.5, color="tab:orange", label="dy")
-    
-    # Plot vertical lines for percentiles
-    for p, val in zip(["25%", "50%", "75%"], x_percentiles):
-        plt.axvline(val, color="tab:blue", linestyle="--", alpha=0.7)
-    for p, val in zip(["25%", "50%", "75%"], y_percentiles):
-        plt.axvline(val, color="tab:orange", linestyle="--", alpha=0.7)
-    
-    # Legend text with percentiles
-    legend_text = [
-        f"dx: p25={x_percentiles[0]:.1f}, p50={x_percentiles[1]:.1f}, p75={x_percentiles[2]:.1f}",
-        f"dy: p25={y_percentiles[0]:.1f}, p50={y_percentiles[1]:.1f}, p75={y_percentiles[2]:.1f}"
-    ]
-    
-    plt.legend(title="\n".join(legend_text))
-    plt.xlabel("Displacement [m]")
-    plt.ylabel("Frequency")
-    plt.title(f"Distribution of Cloud Shadow Displacement (dx, dy)")
-    plt.grid(alpha=0.3)
-    outpath = f"output/cloud_shadow_displacement_hist_cutoff_SZA_80.png"
-    plt.savefig(outpath)
-    print(f"Saved figure to {outpath}.")
+    # Ensure output folder
+    os.makedirs("output/ghi_maps", exist_ok=True)
+    out_nc = os.path.join("output/ghi_maps", "ghi_total_maps.nc")
 
-
+    # Save NetCDF
+    ghi_ds.to_netcdf(out_nc)
+    print(f"Saved GHI maps to {out_nc}")
+    
+    return ghi_ds, out_nc 
+   
 
 if __name__ == "__main__": 
     # Paths
@@ -996,7 +863,7 @@ if __name__ == "__main__":
     cloud_props = pd.read_csv(cloud_cover_table_filepath) 
 
         
-    total_ghi_from_sat_imgs(s2_cloud_mask_folderpath, cloud_cover_table_filepath, lut_filepath,
+    ghi_ds, outpath = total_ghi_from_sat_imgs(s2_cloud_mask_folderpath, cloud_cover_table_filepath, lut_filepath,
                             sw_cor_path=sw_cor_filepath,
                             outpath="output/ghi_maps/", mixed_threshold=1, overcast_threshold=99)
 
@@ -1015,7 +882,7 @@ if __name__ == "__main__":
     start = time()
     dx_pix, dy_pix = get_cloud_shadow_displacement(solar_zenith, solar_azimuth, cbh_m, 
                                        sat_zenith, sat_azimuth, pixel_size = 10, cloud_top_height=cbh_m+1000)
-    shadow_mask = project_cloud_shadow(s2_cloud_mask_sample, dy_pix, dx_pix, BBOX)
+    shadow_mask, shadow_transform = project_cloud_shadow(s2_cloud_mask_sample, dy_pix, dx_pix, BBOX)
     print(f"Shadow computation takes {np.round(time()-start,3)} secs.")
     plot_single_band(shadow_mask, f"output/shadow_mask_{timestamp_str}_sza_{solar_zenith:.2f}_azi_{solar_azimuth:.2f}.png", 
                      f"Shadow Mask for {timestamp_str} (SZA {solar_zenith:.2f}, AZI {solar_azimuth:.2f})",

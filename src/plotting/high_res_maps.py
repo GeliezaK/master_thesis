@@ -42,8 +42,6 @@ with rasterio.open(sample_path) as src:
     raster_bounds = src.bounds
     crs = src.crs
     extent = [src.bounds.left, src.bounds.right, src.bounds.bottom, src.bounds.top]
-    print(f"Transform: {transform}, crs: {crs}, raster bounds: {raster_bounds}")
-    print(f"Extent for plotting: {extent}")
 
 # Load downloaded roads or coastline GeoJSON or SHP
 coast = gpd.read_file("data/raw/coastline_bergen.geojson")     
@@ -60,8 +58,10 @@ coast_clipped = gpd.clip(coast, raster_gdf)
 
 # Define key landmarks (in lat/lon)
 landmarks = {
-    "Bergen Center": (60.39299, 5.32415),
-    "Bergen Airport": (60.2934, 5.2181)
+    #"Bergen Center": (60.39299, 5.32415),
+    #"Bergen Airport": (60.2934, 5.2181),
+    "Florida": (60.3833, 5.3333),
+    "Flesland": (60.292792, 5.222689)
 }
 
 # Convert landmarks to GeoDataFrame in UTM32

@@ -1,24 +1,31 @@
 # Download 1M resolution GHI data from florida and flesland via Frost API 
 
+
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
 import pytz
+from tqdm import tqdm
+
 
 # Your Frost API client ID
 CLIENT_ID = 'f8cf8726-6617-4696-90a4-5b89a668073a'
 
 # Station IDs and names mapping
 stations = {
-    #'SN50539': 'Florida_UiB',
-    'SN50500': 'Flesland'
+    'SN50539': "Florida",
+    'SN50500': 'Flesland',
+    'SN50540' : "Florida",
 }
 
 # Parameters
 element = 'mean(surface_downwelling_shortwave_flux_in_air PT1M)'
 resolution = 'PT1M'
-start_date = '2016-01-01'
-end_date = '2024-12-31'
+start_date_flesland = '2015-08-03' # First obs in flesland
+start_date_florida_1 = '2016-02-11'
+end_date_florida_1 = '2025-01-31'
+start_date_florida_2 = '2025-01-21'
+end_date = '2025-08-31'
 
 # Timezone for Bergen
 bergen_tz = pytz.timezone('Europe/Oslo')
@@ -42,10 +49,19 @@ def get_value(obs_list):
         return obs_list[0].get('value')
     return None
 
+def filter_utc_window(df):
+    """Keep only times between 10:30 and 11:30 UTC"""
+    df['hour'] = df['timestamp'].dt.hour
+    df['minute'] = df['timestamp'].dt.minute
+    return df[((df['hour'] == 10) & (df['minute'] >= 30)) |
+              ((df['hour'] == 11) & (df['minute'] < 30))].copy()
+
+
 def download_monthly_data(station_id, start_dt, end_dt):
     """Download data for one station in monthly chunks"""
     all_data = []
-    for month_start in daterange(start_dt, end_dt):
+    station_name = stations[station_id]
+    for month_start in tqdm(daterange(start_dt, end_dt), desc=f"Downloading from {station_id}..."):
         # Calculate month end (last day of month)
         if month_start.month == 12:
             month_end = month_start.replace(year=month_start.year+1, month=1) - timedelta(days=1)
@@ -65,7 +81,7 @@ def download_monthly_data(station_id, start_dt, end_dt):
             'limit': 100000,  # max per request (Frost default)
         }
 
-        print(f"Downloading {station_id} data from {time_range}...")
+        tqdm.write(f"Downloading {station_id}:{station_name} data from {time_range}...")
 
         try:
             response = requests.get(BASE_URL, params=params, auth=(CLIENT_ID, ''))
@@ -82,7 +98,7 @@ def download_monthly_data(station_id, start_dt, end_dt):
         observations = data_json.get('data', [])
 
         if not observations:
-            print(f"No data for {station_id} in {time_range}")
+            tqdm.write(f"No data for {station_id} in {time_range}")
             continue
 
         # Convert to DataFrame
@@ -111,37 +127,63 @@ def download_monthly_data(station_id, start_dt, end_dt):
             else:
                 df['value'] = None
 
-        # Filter timestamps by local Bergen time 12:00-16:00
-        df['local_time'] = df['timestamp'].dt.tz_convert(bergen_tz)
-        df_filtered = df[(df['local_time'].dt.hour >= 12) & (df['local_time'].dt.hour < 16)].copy()
-
+        # Filter timestamps by UTC time 10:30-11:30
+        df_filtered = filter_utc_window(df)
+        
+        # Add station column
+        df_filtered['station'] = station_name
+        df_filtered['station_id'] =station_id
+        
         # Select relevant columns
-        df_filtered = df_filtered[['local_time', 'value']]
-
+        df_filtered = df_filtered[['timestamp', 'value', 'station', 'station_id']]
+        
         all_data.append(df_filtered)
 
     if all_data:
         return pd.concat(all_data, ignore_index=True)
     else:
-        return pd.DataFrame(columns=['local_time', 'value'])
-
+        return pd.DataFrame(columns=['timestamp', 'value', 'station', 'station_id'])
+    
 def main():
-    start_dt = datetime.strptime(start_date, '%Y-%m-%d').replace(tzinfo=pytz.UTC)
+    # Flesland
+    #  "sourceId": "SN50500:0",
+    # "validFrom": "2015-08-03T00:00:00.000Z",
+    # Florida 1 
+    # "sourceId": "SN50539:0",
+    #  "validFrom": "2016-02-11T00:00:00.000Z",
+    #  "validTo": "2025-01-31T00:00:00.000Z",
+    # Florida 2
+    # "sourceId": "SN50540:0",
+    # "validFrom": "2025-01-21T00:00:00.000Z",
+    start_dt_flesland = datetime.strptime(start_date_flesland, '%Y-%m-%d').replace(tzinfo=pytz.UTC)
+    start_dt_florida_1 = datetime.strptime(start_date_florida_1, '%Y-%m-%d').replace(tzinfo=pytz.UTC)
+    end_dt_florida_1 = datetime.strptime(end_date_florida_1, '%Y-%m-%d').replace(tzinfo=pytz.UTC)
+    start_dt_florida_2 = datetime.strptime(start_date_florida_2, '%Y-%m-%d').replace(tzinfo=pytz.UTC)
     end_dt = datetime.strptime(end_date, '%Y-%m-%d').replace(tzinfo=pytz.UTC)
 
     all_stations_data = []
 
-    for station_id in stations.keys():
-        df_station = download_monthly_data(station_id, start_dt, end_dt)
-        all_stations_data.append(df_station)
+    # Flesland full range
+    df_flesland = download_monthly_data('SN50500', start_dt_flesland, end_dt)
+    all_stations_data.append(df_flesland)
 
-    # Combine all stations data
+    # Florida until 2025-01-31
+    df_florida_1 = download_monthly_data('SN50539', start_dt_florida_1, end_dt_florida_1)
+    all_stations_data.append(df_florida_1)
+
+    # Florida from 2025-01-21 onward
+    df_florida_2 = download_monthly_data('SN50540', start_dt_florida_2, end_dt)
+    all_stations_data.append(df_florida_2)
+
+    # Combine
     df_all = pd.concat(all_stations_data, ignore_index=True)
 
     # Save to CSV
-    outpath='data/processed/frost_ghi_1M_Flesland_filtered.csv'
+    outpath = f'data/processed/frost_ghi_1M_Flesland_Florida_10:30-11:30UTC.csv'
     df_all.to_csv(outpath, index=False)
     print(f"Saved filtered data to {outpath}.")
+
+
 
 if __name__ == '__main__':
     main()
