@@ -6,11 +6,10 @@ import numpy as np
 import xarray as xr
 from datetime import datetime, timezone
 import netCDF4 as nc
+from cftime import DatetimeGregorian
 import pandas as pd
-import sys
-sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
-from preprocessing.preprocess_netcdf_data import add_claas3_variable_to_cloud_cover_table, get_claas3_filepath, compute_roi_stats
-from surface_GHI_model import BBOX
+from src.preprocessing.preprocess_netcdf_data import add_claas3_variable_to_cloud_cover_table, get_claas3_filepath, compute_roi_stats
+from src.preprocessing.validation_with_stations_data import add_simulated_florida_flesland_ghi_by_date, extract_pixel_by_location
 
 
 class TestGetClaas3Filepath(unittest.TestCase):
@@ -95,6 +94,110 @@ class TestGetClaas3Filepath(unittest.TestCase):
         self.ds.close()
         if self.base_dir.exists():
             shutil.rmtree(self.base_dir)
+            
+    def test_extract_pixel_by_location(self):
+        """Test that the correct pixel is extracted for Florida and Flesland stations"""
+
+        # Create a small test NetCDF with lat/lon and GHI_total
+        model_nc_path = self.base_dir / "model_ghi.nc"
+        lats = np.array([60.0, 60.3, 60.5], dtype=np.float32)
+        lons = np.array([5.0, 5.3, 5.5], dtype=np.float32)
+
+        with nc.Dataset(model_nc_path, "w", format="NETCDF4") as ds:
+            ds.createDimension("time", 2)
+            ds.createDimension("lat", len(lats))
+            ds.createDimension("lon", len(lons))
+
+            var_lat = ds.createVariable("lat", "f4", ("lat",))
+            var_lon = ds.createVariable("lon", "f4", ("lon",))
+            var_time = ds.createVariable("time", "f8", ("time",))
+            var_time.units = "hours since 2021-07-15 00:00:00"
+            var_time.calendar = "gregorian"
+
+            var_lat[:] = lats
+            var_lon[:] = lons
+            var_time[:] = [10, 11]  # 10h and 11h UTC
+
+            ghi = ds.createVariable("GHI_total", "f4", ("time", "lat", "lon"))
+            # Shape: (time=2, lat=3, lon=3)
+            ghi[0, :, :] = np.array([
+                [100, 200, 300],
+                [400, 500, 600],
+                [700, 800, 900],
+            ])
+            ghi[1, :, :] = np.array([
+                [150, 250, 350],
+                [450, 550, 650],
+                [750, 850, 950],
+            ])
+
+        # Florida and Flesland coordinates
+        case_1_lat, case_1_lon = 59.5, 5.6 # outside of grid 
+        case_2_lat, case_2_lon = 60.4, 5.25 # inside grid
+        flesland_lat, flesland_lon = 60.292792, 5.222689
+
+        # Extract pixels
+        times, case_1_vals = extract_pixel_by_location(model_nc_path, case_1_lat, case_1_lon)
+        times, case_2_vals = extract_pixel_by_location(model_nc_path, case_2_lat, case_2_lon)
+        _, flesland_vals = extract_pixel_by_location(model_nc_path, flesland_lat, flesland_lon)
+
+        # Case 1 should map to nearest pixels [lat=0, lon=2] --> [300,350]
+        np.testing.assert_array_equal(case_1_vals, [300, 350])
+
+        # Case 2 should map to nearest pixels [lat=2, lon=1] --> [800,850]
+        np.testing.assert_array_equal(case_2_vals, [800, 850])
+
+        # Flesland also maps to nearest [lat=1, lon=1] --> [500, 550]
+        np.testing.assert_array_equal(flesland_vals, [500, 550])
+
+        # Times should be 2 entries (10h, 11h UTC)
+        self.assertEqual(len(times), 2)
+        
+    def test_add_simulated_florida_flesland_ghi_by_date(self):
+        """Test merging simulated Florida/Flesland GHI by date with duplicates and missing dates."""
+
+        # Create a df with simulated GHI values
+        ts_obs = pd.to_datetime([f"{self.year}-{self.month}-{self.day} 10:58:00",
+                                f"{self.year}-{self.month}-{self.day} 10:46:00",
+                                "2021-07-16 11:00:00"], utc=True)
+        
+        # Convert to Gregorian because that's how they are saved in ghi.nc file
+        ts_cftime = [DatetimeGregorian(t.year, t.month, t.day, t.hour, t.minute, t.second) for t in ts_obs]
+        
+        df_sim = pd.DataFrame({
+            "time": ts_cftime + ts_cftime,  # duplicate rows
+            "Florida_ghi_sim": [100, 200, 300, 100, 200, 300],
+            "Flesland_ghi_sim": [10, 20, 30, 10, 20, 30]
+        })
+        
+
+        # Output path
+        out_csv = self.base_dir / "merged_obs.csv"
+
+        # Call function to merge
+        merged = add_simulated_florida_flesland_ghi_by_date(self.cloud_cover_path, df_sim, out_csv)
+
+        # Check that merged has new columns
+        self.assertIn("Florida_ghi_sim", merged.columns)
+        self.assertIn("Flesland_ghi_sim", merged.columns)
+
+        # Load original obs dates
+        obs_dates = pd.read_csv(self.cloud_cover_path)["date"].apply(pd.to_datetime).dt.date
+
+        # Check that for missing date (2024-08-01) values are NaN
+        missing_idx = merged["date"] == pd.to_datetime("2024-08-01").date()
+        self.assertTrue(merged.loc[missing_idx, "Florida_ghi_sim"].isna().all())
+        self.assertTrue(merged.loc[missing_idx, "Flesland_ghi_sim"].isna().all())
+
+        # Check that for the other two dates, correct values are merged (should match first occurrence in df_sim)
+        for date, florida_val, flesland_val in zip(obs_dates[:-1], [100, 100], [10, 10]):
+            row = merged[merged["date"] == date]
+            self.assertEqual(row["Florida_ghi_sim"].values[0], florida_val)
+            self.assertEqual(row["Flesland_ghi_sim"].values[0], flesland_val)
+
+        # Check that CSV file was created
+        self.assertTrue(out_csv.exists())
+
 
     def test_closest_file_selection(self):
         # Define candidate times in minutes after midnight

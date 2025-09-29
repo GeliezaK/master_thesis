@@ -33,6 +33,6 @@ def plot_ghi_for_timestep(ghi_file, ind=0, outdir="output"):
 
     
 if __name__ == "__main__":
-    ghi_maps_filepath = "output/ghi_maps/ghi_total_maps.nc"
+    ghi_maps_filepath = "data/processed/simulated_ghi.nc"
     plot_ghi_for_timestep(ghi_file=ghi_maps_filepath, ind=3, outdir="output")
     

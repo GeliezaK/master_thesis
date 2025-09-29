@@ -15,7 +15,7 @@ import cartopy.feature as cfeature
 import cartopy.mpl.ticker as cticker
 from pathlib import Path
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from surface_GHI_model import BBOX
+from src.model.surface_GHI_model import BBOX
 
 def inspect_file(filepath, variable_name):
     # open the netCDF file

@@ -43,11 +43,17 @@ def get_sunshine_hours_for_doy(doy, location):
 
 # Parameter discretizations
 # Day of year: 15th of each month 
-DOY = [15, 46, 74, 105, 135, 166, 196, 227, 258, 288, 319, 349]
-doy_to_month = {
-    15: 1, 46: 2, 74: 3, 105: 4, 135: 5, 166: 6,
-    196: 7, 227: 8, 258: 9, 288: 10, 319: 11, 349: 12
-}
+# Reference year (non-leap year assumed, e.g. 2021)
+year = 2021
+
+# Generate DOY for the 1st and 15th of each month
+DOY = [1, 15, 32, 46, 60, 74, 91, 105, 121, 135, 152, 166, 182, 196, 213, 227, 244, 258, 274, 288, 305, 319, 335, 349]
+doy_to_date = {}
+for doy in DOY:
+    dt = pd.Timestamp(year=year, month=1, day=1) + pd.Timedelta(days=doy - 1)
+    doy_to_date[doy] = (dt.month, dt.day)
+
+print(doy_to_date)
 
 # Hour of day: all values that have sunshine throughout the year UTC
 # Bergen timezones: Apr-Oct: UTC+2, Nov-Mar UTC+1. Calculate from astral model and convert to UTC
@@ -63,8 +69,8 @@ AOD_MONTHLY = {1: 0.077, 2:0.081, 3:0.075, 4:0.087,
                9: 0.094, 10:0.061, 11:0.067, 12:0.072}
 
 # Surface albedo values
-# 5, 25, 50, 75 and 95 percentiles, empirical values from S5P
-ALBEDO_VALUES = [0.081, 0.129, 0.174, 0.224, 0.354] 
+# 50 percentile, from claas3 small region subset
+ALBEDO_VALUES = [0.129] 
 
 # Altitude in km 
 # Range in Bergen is 0 (sea level) - 800 with a peak around 50m. From Copernicus DEM 30m resolution
@@ -83,12 +89,15 @@ LWC = 0.1 # from libRadtran simple water cloud example and Lee et al. (2010)
 IWC = 0.015 # from Hong and Liu (2015) for 60° Latitude 5km cloud altitude, vs. 0.015 from libRadtran simple ice cloud example
 
 # Cloud optical depth at 760nm, from Sentinel-5P
-# Percentiles 1, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99, empirical values from S5P
-TAU_760 = [1.0, 3.41, 5.50, 7.68, 10.18, 13.67, 19.34, 27.79, 42.03, 73.23, 125.42, 250.0]
+# Percentiles 1, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99, between 0 and 60, 
+# plus values 0.1, 65, 75, 90, 100, 140, 150, empirical values from claas cot small region
+COT =  [0.1, 0.31, 0.75, 1.31, 2.17, 3.4, 4.87, 7.11, 9.54, 14.03, 19.66, 29.09, 38.73, 53.51, 65, 75, 90, 100, 140, 150]
  
 # Cloud base height in km, from Sentinel-5P
 # Altitude + Percentiles 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99, empirical values from S5P 
-CLOUD_BASE_HEIGHT = [0.08, 0.167, 0.285, 0.571, 0.915, 1.286, 1.753, 2.370, 3.171, 4.165, 5.451, 6.543, 8.498]
+#CLOUD_BASE_HEIGHT = [0.08, 0.167, 0.285, 0.571, 0.915, 1.286, 1.753, 2.370, 3.171, 4.165, 5.451, 6.543, 8.498]
+CLOUD_TOP_HEIGHT = [0.575,  1.291,  2.008, 2.724,  3.440,  4.157,  4.873,  5.589,  6.306,  7.022, 
+                    7.738, 8.454, 9.171, 9.887, 10.603, 11.320, 12.036, 12.752, 13.469, 14.185]
 
 # Cloud thickness (vertical extent) in km, from Sentinel-5P 
 # fixed at 1km, according to satellite data valid for large majority of clouds 
@@ -103,11 +112,78 @@ CLOUD_PHASE = ['ice', 'water']
 TAU_SCALING_FACTOR = 1 
 
 # Output directory 
-OUTPUT_DIR = "output/LUT/"
+OUTPUT_DIR = "data/processed/LUT/claas3/"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
-def descriptive_stats(df):
+def descriptive_stats_claas3(df):
+    """Generate descriptive statistics of cloud properties in Bergen based on claas 3 data"""
+    print(df.describe())
+    
+    # Calculate percentiles
+    # Define percentiles
+    albedo_percentiles = [5, 25, 50, 75, 95]
+    cloud_percentiles = [1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99]
+
+    # Compute and round percentiles
+    albedo_stats = df["blue_sky_albedo_median"].quantile([p / 100 for p in albedo_percentiles]).round(3)
+    cth_stats = df["cth_median_small"].quantile([p / 100 for p in cloud_percentiles]).round(0)
+    cot_stats = df["cot_median_small"].quantile([p / 100 for p in cloud_percentiles]).round(2)
+    
+    # Add linearly spaced values for CTH
+    cth_min, cth_max = df["cth_median_small"].min(), df["cth_median_small"].max()
+    cth_linspace = np.linspace(cth_min, cth_max, 20).round(0)
+
+    # Add logarithmically spaced values for COT (exclude zero/negative)
+    cot_subset = df.loc[(df["cot_median_small"] >= 0) & (df["cot_median_small"] <= 60), "cot_median_small"]
+
+    cot_percentiles = cot_subset.quantile([p / 100 for p in cloud_percentiles]).round(2).tolist()
+    cot_min = np.round(df["cot_median_small"].min(),2)
+
+    cot_custom = sorted(set(cot_percentiles + [cot_min, 65, 75, 90, 100, 140, 150]))
+
+
+    print("\nAlbedo percentiles:\n", albedo_stats)
+    print("\nCloud Top Height percentiles:\n", cth_stats)
+    print("\nCloud Optical Thickness percentiles:\n", cot_stats)
+
+    print("\nLinearly spaced Cloud Top Height values:\n", cth_linspace)
+    print("\nCustom Cloud Optical Thickness values:\n", cot_custom)
+    
+    # Plot 4 histograms in a 2x2 grid
+    fig, axs = plt.subplots(1, 3, figsize=(14, 8))
+    fig.suptitle("Distributions of Cloud and Surface Properties", fontsize=16)
+
+    # Plot each feature
+    axs[0].hist(df["blue_sky_albedo_median"], bins=50, color='skyblue', edgecolor='black')
+    axs[0].axvline(albedo_stats.loc[0.5], color="red", linestyle="--", label="50% percentile")
+    axs[0].set_title("Surface Albedo")
+    axs[0].set_xlabel("Albedo")
+    axs[0].set_ylabel("Frequency")
+
+    axs[1].hist(df["cth_median_small"], bins=50, color='lightgreen', edgecolor='black')
+    for val in cth_linspace:
+        axs[1].axvline(val, color="black", linestyle="--", alpha=0.5)
+    axs[1].set_title("Cloud Top Height (m)")
+    axs[1].set_xlabel("Height (m)")
+    axs[1].set_ylabel("Frequency")
+
+    axs[2].hist(df["cot_median_small"], bins=50, color='orange', edgecolor='black')
+    for val in cot_custom:
+        axs[2].axvline(val, color="black", linestyle="--", alpha=0.5)
+    axs[2].set_title("Cloud Optical Depth")
+    axs[2].set_xlabel("Optical Depth")
+    axs[2].set_ylabel("Frequency")
+
+    # Layout adjustment
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    outpath="output/claas3_cloud_properties_descriptive_stats.png"
+    plt.savefig(outpath)
+    print(f"Descriptive claas stats saved to {outpath}.")
+
+
+
+def descriptive_stats_s5p(df):
     """Generate descriptive statistics of cloud properties in Bergen"""
     print(df.describe())
     
@@ -124,7 +200,7 @@ def descriptive_stats(df):
     # Print results
     print("Surface Albedo Percentiles:")
     print(albedo_stats)
-    print("\nCloud Base Height Percentiles:")
+    print("\nCloud Top Height Percentiles:")
     print(base_height_stats)
     print("\nCloud Optical Depth Percentiles:")
     print(cod_stats)
@@ -326,7 +402,7 @@ def generate_LUT():
             for albedo in ALBEDO_VALUES:
                 all_combos.append((doy, hour, albedo))
 
-    
+
     for doy, hour, albedo in tqdm(all_combos, desc="🌍 Generate LUT ", unit="config"):
         # File naming convention
         filename = f"LUT_doy{doy}_hod{hour}_alb{albedo}.csv"
@@ -334,7 +410,7 @@ def generate_LUT():
         
         # Skip if output file already exists
         if os.path.exists(output_path):
-            print(f"⏩ Skipping existing file: {output_path}")
+            tqdm.write(f"⏩ Skipping existing file: {output_path}")
             continue
         
         # Select atmospheric profile: midlatitudes is default for this region
@@ -347,36 +423,33 @@ def generate_LUT():
         
         # Skip if the sun is not visible
         if ghi_clear == 0.0: 
-            print(f"No sunshine for DOY {doy}, hour {hour}; skip")
+            tqdm.write(f"No sunshine for DOY {doy}, hour {hour}; skip")
             continue
 
-        #print(f"\n🔵 CLEAR SKY | Atmos={profile}, DOY={doy}, Hour= {hour}, Albedo={albedo}")
-        #print(f"    → GHI_clear={ghi_clear:.2f} W/m², Direct_clear={direct_clear:.2f}, Diffuse_clear={diffuse_clear:.2f}")
+        tqdm.write(f"\n🔵 CLEAR SKY | Atmos={profile}, DOY={doy}, Hour= {hour}, Albedo={albedo}")
+        tqdm.write(f"    → GHI_clear={ghi_clear:.2f} W/m², Direct_clear={direct_clear:.2f}, Diffuse_clear={diffuse_clear:.2f}")
 
         results = []
 
-        for base, tau760, cloud_type in product(CLOUD_BASE_HEIGHT, TAU_760, CLOUD_PHASE):                
-            # Ice clouds typically don't have COD values of larger than 30 in these latitudes
-            # so skip these combinations here (Hoi and Liu, 2015)
-            if (cloud_type == "ice") and tau760 > 30:
-                continue
-                    
-            top = base + CLOUD_VERTICAL_EXTENT
-            tau550 = np.round(TAU_SCALING_FACTOR * tau760,3)
+        for cth, cot, cloud_phase in tqdm(product(CLOUD_TOP_HEIGHT, COT, CLOUD_PHASE),
+            desc=f"☁ Inner loop (doy={doy}, h={hour})", leave=False):                                   
+            base = cth - CLOUD_VERTICAL_EXTENT
+            # Set base to 0 if cth-vertical extent is smaller than 0 
+            base = 0.0 if base < 0.0 else base 
 
             # Determine cloud phase
-            reff = IC_REFF if cloud_type == "ice" else WC_REFF
-            lwc = IWC if cloud_type == "ice" else LWC
+            reff = IC_REFF if cloud_phase == "ice" else WC_REFF
+            lwc = IWC if cloud_phase == "ice" else LWC
 
-            cloud_file = f"cloudfiles/{cloud_type}_base{base*1000}_tau{round(tau550)}.dat"
-            write_cloud_file(cloud_file, base, top, lwc, reff)
+            cloud_file = f"cloudfiles/{cloud_phase}_top{cth*1000}_cot{cot:.2f}.dat"
+            write_cloud_file(cloud_file, base, cth, lwc, reff)
 
             # Cloudy input with cloud file and modify tau550
             cloudy_input = generate_uvspec_input(
                 doy, hour, albedo, profile,
                 cloud_file=cloud_file,
-                cloud_type=cloud_type,
-                tau550=tau550
+                cloud_phase=cloud_phase,
+                cot=cot
             )
             
             ghi_cloudy, direct_cloudy, diffuse_cloudy = run_uvspec(cloudy_input)
@@ -386,13 +459,13 @@ def generate_LUT():
             caf_dir = direct_cloudy / direct_clear if direct_clear > 0 else np.nan
             caf_dif = diffuse_cloudy / diffuse_clear if diffuse_clear > 0 else np.nan
             
-            #print(f"☁️  CLOUDY SKY | Base={base} km, Type={cloud_type}, Tau550={tau550}")
-            #print(f"    → GHI_cloudy={ghi_cloudy:.2f} W/m², Direct_cloudy={direct_cloudy:.2f}, Diffuse_cloudy={diffuse_cloudy:.2f}")
+            #tqdm.write(f"☁️  CLOUDY SKY | Base={base} km, Type={cloud_phase}, COT={cot}")
+            #tqdm.write(f"    → GHI_cloudy={ghi_cloudy:.2f} W/m², Direct_cloudy={direct_cloudy:.2f}, Diffuse_cloudy={diffuse_cloudy:.2f}")
             #print(f"📉 CAF        | CAF_GHI={caf_ghi:.3f}, CAF_Direct={caf_dir:.3f}, CAF_Diffuse={caf_dif:.3f}")
 
             results.append([
-                profile, doy, hour, albedo, ALTITUDE, AOD_MONTHLY[doy_to_month[doy]],
-                base, top, tau550, cloud_type,
+                profile, doy, hour, albedo, ALTITUDE, AOD_MONTHLY[doy_to_date[doy][0]],
+                base, cth, cot, cloud_phase,
                 ghi_clear, direct_clear, diffuse_clear,
                 ghi_cloudy, direct_cloudy, diffuse_cloudy,
                 caf_ghi, caf_dir, caf_dif
@@ -402,12 +475,12 @@ def generate_LUT():
         with open(output_path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([
-                "Atmosphere", "DOY", "Hour", "Albedo", "Altitude_km",
-                "AOD",
-                "CloudBase_km", "CloudTop_km", "Tau550", "CloudType",
-                "GHI_clear", "Direct_clear", "Diffuse_clear",
-                "GHI_cloudy", "Direct_cloudy", "Diffuse_cloudy",
-                "CAF_GHI", "CAF_Direct", "CAF_Diffuse"
+                "atmosphere", "doy", "hour", "albedo", "altitude_km",
+                "aod",
+                "cloud_base_km", "cloud_top_km", "cot", "cloud_phase",
+                "ghi_clear", "direct_clear", "diffuse_clear",
+                "ghi_cloudy", "direct_cloudy", "diffuse_cloudy",
+                "caf_ghi", "caf_direct", "caf_diffuse"
             ])
             writer.writerows(results)
 
@@ -422,13 +495,14 @@ def write_cloud_file(filename, base, top, lwc, reff):
         f.write(f"{base:.3f} {lwc} {reff}\n")
 
 def generate_uvspec_input(doy, hour, albedo, profile,
-                          cloud_file=None, cloud_type=None, tau550=None):
-    month = doy_to_month[doy]
+                          cloud_file=None, cloud_phase=None, cot=None):
+    month = doy_to_date[doy][0]
+    day = doy_to_date[doy][1]
     lines = [
         #"verbose", #disable for speed-up
         "latitude N 60.39", # Bergen latitude and longitude, combine with time to select SZA and atm_profile
         "longitude E 5.33",
-        f"time 2024 {month} 15 {hour} 00 00",
+        f"time 2024 {month} {day} {hour} 00 00",
         "rte_solver disort",
         f"atmosphere_file {profile}",
         "number_of_streams 6", #default is 6 for fluxes, 16 for radiances 
@@ -442,13 +516,13 @@ def generate_uvspec_input(doy, hour, albedo, profile,
         f"altitude {ALTITUDE}"
     ]
 
-    if cloud_file and cloud_type and tau550:
-        if cloud_type == "ice":
+    if cloud_file and cloud_phase and cot:
+        if cloud_phase == "ice":
             lines.append(f"ic_file 1D {cloud_file}")
-            lines.append(f"ic_modify tau550 set {tau550}")
+            lines.append(f"ic_modify tau550 set {cot}")
         else:
             lines.append(f"wc_file 1D {cloud_file}")
-            lines.append(f"wc_modify tau550 set {tau550}")
+            lines.append(f"wc_modify tau550 set {cot}")
 
     return "\n".join(lines)
 
@@ -517,9 +591,12 @@ if __name__ == "__main__":
     #df["cloud_vertical_extent"] = df["cloud_top_height"] - df["cloud_base_height"]
     #df = df.drop(columns=["cloud_top_height"])
     
-    #descriptive_stats(df)
+    #descriptive_stats_s5p(df)
     #evaluate_cluster_range(df)
     #labels, centroids = generate_cloud_classes(df, n_clusters=18)
-    #generate_LUT()
+    generate_LUT()
     #merge_LUT_files("output/LUT", "output/LUT/LUT.csv")
+    #df_claas = pd.read_csv("data/processed/s2_cloud_cover_table_small_and_large_with_simulated_florida_flesland_ghi.csv")
+    #df_claas = df_claas[["date", "blue_sky_albedo_median", "cot_median_small", "cth_median_small", "cph_median_small"]]
+    #descriptive_stats_claas3(df_claas)
     pass
