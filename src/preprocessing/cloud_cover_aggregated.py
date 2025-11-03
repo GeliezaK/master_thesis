@@ -457,8 +457,37 @@ def scatter_compare(df, col_x, col_y, title="Cloud Cover Comparison", outpath=No
     # Pearson correlation
     corr = df[col_x].corr(df[col_y])
     print(f"Correlation between {col_x} and {col_y}: {corr:.3f}")
+    
+def merge_thresh40_with_thresh50_cloud_cover(thresh40_filepath, dest_filepath): 
+    dest_df = pd.read_csv(dest_filepath)
+    thresh40_df = pd.read_csv(thresh40_filepath)
+    # Rename old columns in dest_df (threshold 50 version)
+    dest_df = dest_df.rename(
+        columns={
+            "cloud_cover_small": "cloud_cover_small_thresh50",
+            "cloud_cover_large": "cloud_cover_large_thresh50",
+        }
+    )
 
+    # Merge in the new columns (threshold 40 version)
+    # Assumption: both dfs have a "date" column (or similar) to align on
+    dest_df = dest_df.merge(
+        thresh40_df[["date", "cloud_cover_small", "cloud_cover_large"]],
+        on="date",
+        how="left",
+        suffixes=("", "_thresh40")  # keep them separate if overlap
+    )
 
+    print(list(dest_df))
+    print(dest_df[["date", "cloud_cover_small", "cloud_cover_large",
+                        "cloud_cover_small_thresh50", "cloud_cover_large_thresh50"]].head())
+    print(dest_df[["date", "cloud_cover_small", "cloud_cover_large",
+                        "cloud_cover_small_thresh50", "cloud_cover_large_thresh50"]].describe())
+
+    # Save back to CSV if needed
+    dest_df.to_csv(dest_filepath, index=False)
+
+    
 if __name__ == "__main__":
     # Import cleaned dataset
     #df = pd.read_csv("data/processed/s2_cloud_cover_cleaned.csv")
@@ -470,12 +499,17 @@ if __name__ == "__main__":
     #combined_df = pd.read_csv("data/processed/cloud_cover_2015-06-01_2025-05-01_s2_Flesland_Florida_paired.csv") 
     
     # Merge all cloud cover tables 
-    merged_outpath = "data/processed/s2_cloud_cover_table_small_and_large.csv"
-    #merge_all_cloud_cover_tables(output_file=merged_outpath)
+    infolder = "data/processed/S2_cloud_cover_tables_thresh_40"
+    merged_outpath = "data/processed/s2_cloud_cover_large_thresh_40.csv"
+    #merge_all_cloud_cover_tables(input_folder=infolder, output_file=merged_outpath)
     
-    # Import small and large roi cloud cover 
+    # Add cloud cover with threshold > 40 as new columns to dataframe 
+    cloud_cover_filepath = "data/processed/s2_cloud_cover_table_small_and_large_with_stations_data.csv"
+
+    merge_thresh40_with_thresh50_cloud_cover(merged_outpath, cloud_cover_filepath)
     
-    # Reload merged dataset 
+    
+    """ # Reload merged dataset 
     df = pd.read_csv(merged_outpath)
 
     # Convert to datetime
@@ -494,16 +528,16 @@ if __name__ == "__main__":
     print(df.head())
     print(df[["time_of_day", "cloud_cover_large", "start_time_range_small", "start_time_range_large"]].describe())
     
-
+    
     # Run scatter comparison
-    """ scatter_compare(df, "cloud_cover_small", "cloud_cover_large", 
+    scatter_compare(df, "cloud_cover_small", "cloud_cover_large", 
                     title="Scatter Plot: Cloud Cover Small vs Large ROI (2015-2025)", 
-                    outpath="output/cloud_cover_scatter.png")
+                    outpath="output/cloud_cover_scatter_thresh_40.png")
     plot_hist_cloud_cover(df, "Small ROI Cloud Cover Distribution", 
-                          "output/s2_cloud_cover_small_roi_hist.png",
+                          "output/s2_cloud_cover_small_roi_hist_thresh_40.png",
                           "cloud_cover_small")
     
     plot_hist_cloud_cover(df, "Large ROI Cloud Cover Distribution", 
-                          "output/s2_cloud_cover_large_roi_hist.png",
-                          "cloud_cover_large") """
+                          "output/s2_cloud_cover_large_roi_hist_thresh_40.png",
+                          "cloud_cover_large")  """
   

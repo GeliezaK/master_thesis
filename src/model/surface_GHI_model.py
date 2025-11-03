@@ -4,292 +4,20 @@
 #           - folderpath to S2 images
 
 import rasterio
-from rasterio.warp import calculate_default_transform, reproject, Resampling
-from rasterio.merge import merge
-from rasterio.mask import mask
-from rasterio.enums import Resampling
 from rasterio.transform import from_origin
 from tqdm import tqdm
 from netCDF4 import Dataset, date2num
 import xarray as xr
-import geopandas as gpd
-from shapely.geometry import box
-import glob
-import horayzon as hray
 import os
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import math
-from time import time
-from skyfield.api import load, wgs84
-from rasterio.plot import show
-from src.plotting.high_res_maps import plot_landmarks, plot_single_band, plot_single_band_histogram, plot_single_tif
-
-# Define the center of the bounding box (Bergen, Norway)
-CENTER_LAT = 60.39
-CENTER_LON = 5.33
-
-# Approximate degree adjustments for 100km x 100km box
-DEG_LAT_TO_KM = 111.412  # 1 degree latitude at 60° converted to km (https://en.wikipedia.org/wiki/Latitude)
-DEG_LON_TO_KM = 111.317 * math.cos(np.deg2rad(CENTER_LAT))  # 1 degree longitude converted to km
-LAT_OFFSET = 12.5 / DEG_LAT_TO_KM  # ~10km north/south
-LON_OFFSET = 12.5 / DEG_LON_TO_KM  # ~10km east/west (varies with latitude, approximation)
-
-# Define the bounding box
-BBOX = {
-    "north": CENTER_LAT + LAT_OFFSET,
-    "south": CENTER_LAT - LAT_OFFSET,
-    "west": CENTER_LON - LON_OFFSET,
-    "east": CENTER_LON + LON_OFFSET
-}
+from src.model import MIXED_THRESHOLD, OVERCAST_THRESHOLD, FLESLAND_LAT, FLESLAND_LON, FLORIDA_LAT, FLORIDA_LON
     
 def load_image(filepath): 
     with rasterio.open(filepath) as src:
         dem = src.read(1).astype(float)
         profile = src.profile
     return dem, profile
-
-
-def calculate_sw_dir_cor(
-    dsm_filepath,
-    times, 
-    out_dir="data/processed/sw_cor"
-):
-    """
-    Compute correction factor for direct shortwave radiation using Horayzon.
-
-    Parameters
-    ----------
-    
-    Returns
-    -------
-    out_file : str
-        Path to written GeoTIFF.
-    """
-    # Read Dsm file    
-    with rasterio.open(dsm_filepath) as src:
-        dsm = src.read(1)  # first band
-        transform = src.transform
-        crs = src.crs
-        print(f"crs: {crs}")
-        origin = (transform.c, transform.f)  # (west, north) of top-left corner
-        print(f"origin: {origin}")
-        # Column and row indices
-        nrows, ncols = dsm.shape
-        cols = np.arange(ncols)
-        rows = np.arange(nrows)
-
-        # Convert column indices (x direction) to longitude
-        lon, _ = rasterio.transform.xy(transform, np.zeros_like(cols), cols)
-        lon = np.array(lon, dtype=np.float64)  # shape = (ncols,)
-
-        # Convert row indices (y direction) to latitude
-        _, lat = rasterio.transform.xy(transform, rows, np.zeros_like(rows))
-        lat = np.array(lat, dtype=np.float64)  # shape = (nrows,)
-
-    #lat = lat[::-1]
-    #dsm = dsm[::-1, :]
-    print("lon:", lon.shape, lon[:5])
-    print("lat:", lat.shape, lat[:5])
-    print("DSM type:", type(dsm), "dtype:", dsm.dtype, "shape:", dsm.shape)
-    
-    elevation_ortho = np.ascontiguousarray(dsm)
-    # orthometric height (-> height above mean sea level)
-    
-    os.makedirs(out_dir, exist_ok=True)
-    out_file = os.path.join(
-        out_dir,
-        f"sw_cor_bergen.nc"
-    )
-    
-    ellps = "WGS84"
-    
-    # Compute ECEF coordinates
-    print("DSM first values before correction:", dsm[2:4, 2:4])
-    dsm += hray.geoid.undulation(lon, lat, geoid="EGM96")  # [m]
-    print("DSM first values after correction:", dsm[2:4,2:4])
-    
-
-    # Ensure correct dtypes for Horayzon
-    if lon.dtype != np.float32:
-        lon = lon.astype(np.float32)
-    if lat.dtype != np.float32:
-        lat = lat.astype(np.float32)
-    if dsm.dtype != np.float32:
-        dsm = dsm.astype(np.float32)
-
-    print(f"Datatypes after conversion: lon {lon.dtype}, lat {lat.dtype}, dsm {dsm.dtype}")
-
-    x_ecef, y_ecef, z_ecef = hray.transform.lonlat2ecef(*np.meshgrid(lon, lat),
-                                                    dsm, ellps=ellps)
-    print(f"ECEF: X: {x_ecef[2:4, 2:4]}, \nY: {y_ecef[2:4, 2:4]}, \nZ: {z_ecef[2:4, 2:4]}")
-    
-    trans_ecef2enu = hray.transform.TransformerEcef2enu(
-    lon_or=lon[int(len(lon) / 2)], lat_or=lat[int(len(lat) / 2)], ellps=ellps)
-    x_enu, y_enu, z_enu = hray.transform.ecef2enu(x_ecef, y_ecef, z_ecef,
-                                              trans_ecef2enu)
-
-    print(f"ENU: x_enu: {x_enu.shape}, \ny_enu: {y_enu.shape}, \nz_enu: {z_enu.shape}")
-    
-    # Compute unit vectors (up and north) in ENU coordinates for whole domain
-    vec_norm_ecef = hray.direction.surf_norm(*np.meshgrid(lon,lat))
-    vec_north_ecef = hray.direction.north_dir(x_ecef, y_ecef,
-                                            z_ecef, vec_norm_ecef,
-                                            ellps=ellps)
-    print(f"Vec_norm_ecef: {vec_norm_ecef.shape}, {vec_norm_ecef[2:4, 2:4, 1]}")
-    print(f"Vec_north_ecef: {vec_north_ecef.shape}, {vec_north_ecef[2:4, 2:4, 1]}")
-    vec_norm_enu = hray.transform.ecef2enu_vector(vec_norm_ecef, trans_ecef2enu)
-    vec_north_enu = hray.transform.ecef2enu_vector(vec_north_ecef, trans_ecef2enu)
-
-    print(f"Vec_norm_enu:  {vec_norm_enu.shape}, {vec_norm_enu[2:4, 2:4, 1]}")
-    print(f"Vec_north_enu: {vec_north_enu.shape}, {vec_north_enu[2:4, 2:4, 1]}")
-  
-    # Merge vertex coordinates and pad geometry buffer
-    vert_grid = hray.auxiliary.rearrange_pad_buffer(x_enu, y_enu, z_enu)
-
-    # Compute rotation matrix (global ENU -> local ENU)
-    rot_mat_glob2loc = hray.transform.rotation_matrix_glob2loc(vec_north_enu,
-                                                           vec_norm_enu)
-    print(f"Rotation Matrix shape: ", rot_mat_glob2loc.shape)
-    
-    # Compute slope (full grid, pad by 1 on each side)
-    x_enu_pad = np.pad(x_enu, 1, mode="edge")
-    y_enu_pad = np.pad(y_enu, 1, mode="edge")
-    z_enu_pad = np.pad(z_enu, 1, mode="edge")
-    
-    print(f"Shapes of padded: x_enu_pad {x_enu_pad.shape}, y_enu_pad {y_enu_pad.shape}, z_enu_pad {z_enu_pad.shape}")
-
-    vec_tilt_enu = np.ascontiguousarray(
-        hray.topo_param.slope_plane_meth(
-            x_enu_pad, y_enu_pad, z_enu_pad,
-            rot_mat=rot_mat_glob2loc, output_rot=False
-        )[1:-1, 1:-1]
-    )
-
-    print(f"vec_tilt_enu shape: ", vec_tilt_enu.shape, vec_tilt_enu[2:4, 2:4, 1])
-    
-    # Compute surface enlargement factor
-    surf_enl_fac = 1.0 / (vec_norm_enu * vec_tilt_enu).sum(axis=2)
-    # surf_enl_fac[:] = 1.0
-    print("Surface enlargement factor (min/max): %.3f" % surf_enl_fac.min()
-        + ", %.3f" % surf_enl_fac.max())
-    print("surf_enl_fac dtype:", surf_enl_fac.dtype)
-    print("surf_enl_fac shape:", surf_enl_fac.shape)
-    print("Number of NaNs:", np.isnan(surf_enl_fac).sum())
-    print("Number of infs:", np.isinf(surf_enl_fac).sum())
-    print("Valid value range (ignoring NaNs):",
-        np.nanmin(surf_enl_fac), "to", np.nanmax(surf_enl_fac))
-    
-    mask = np.ones(vec_tilt_enu.shape[:2], dtype=np.uint8)
-    
-    terrain = hray.shadow.Terrain()
-    dim_in_0, dim_in_1 = vec_tilt_enu.shape[0], vec_tilt_enu.shape[1]
-    terrain.initialise(vert_grid, nrows, ncols,
-                    0, 0, vec_tilt_enu, vec_norm_enu,
-                    surf_enl_fac, mask=mask, elevation=elevation_ortho,
-                    refrac_cor=True)
-    
-    # Load Skyfield data
-    load.directory = "data"
-    planets = load("de421.bsp")
-    sun = planets["sun"]
-    earth = planets["earth"]
-    loc_or = earth + wgs84.latlon(trans_ecef2enu.lat_or, trans_ecef2enu.lon_or)
-    print("sun: ", sun)
-    print("earth: ", earth)
-    print("loc_or: ", loc_or)
-    # -> position lies on the surface of the ellipsoid by default
-
-    # -----------------------------------------------------------------------------
-    # Compute shortwave correction factor
-    # -----------------------------------------------------------------------------
-
-    # Loop through time steps and save data to NetCDF file
-    ncfile = Dataset(filename=out_file, mode="w")
-    ncfile.createDimension(dimname="time", size=None)
-    ncfile.createDimension(dimname="lat", size=dim_in_0)
-    ncfile.createDimension(dimname="lon", size=dim_in_1)
-    nc_time = ncfile.createVariable(varname="time", datatype="f",
-                                    dimensions="time")
-    nc_time.units = "hours since 2015-01-01 00:00:00"
-    nc_time.calendar = "gregorian"
-    # Create sun position variables
-    nc_sun_x = ncfile.createVariable(varname="sun_x", datatype="f4", dimensions=("time",))
-    nc_sun_y = ncfile.createVariable(varname="sun_y", datatype="f4", dimensions=("time",))
-    nc_sun_z = ncfile.createVariable(varname="sun_z", datatype="f4", dimensions=("time",))
-    nc_sun_x.units = nc_sun_y.units = nc_sun_z.units = "m"
-    nc_lat = ncfile.createVariable(varname="lat", datatype="f",
-                                dimensions="lat")
-    nc_lat[:] = lat
-    nc_lat.units = "degree"
-    nc_lon = ncfile.createVariable(varname="lon", datatype="f",
-                                dimensions="lon")
-    nc_lon[:] = lon
-    nc_lon.units = "degree"
-    nc_data = ncfile.createVariable(varname="sw_dir_cor", datatype="f",
-                                    dimensions=("time", "lat", "lon"))
-    nc_data.long_name = "correction factor for direct downward shortwave radiation"
-    nc_data.units = "-"
-    ncfile.close()
-    comp_time_sw_dir_cor = []
-    sw_dir_cor_buffer = np.zeros(vec_tilt_enu.shape[:2], dtype=np.float32)
-    
-    print("Number of timestamps:", len(times))
-    
-    for i, timestamp in enumerate(tqdm(times, desc="Computing SW dir cor", unit="step")):
-        t_beg = time()
-
-        ts = load.timescale()
-        t = ts.from_datetime(timestamp)
-        
-        astrometric = loc_or.at(t).observe(sun)
-        alt, az, d = astrometric.apparent().altaz()
-        
-        x = d.m * np.cos(alt.radians) * np.sin(az.radians)
-        y = d.m * np.cos(alt.radians) * np.cos(az.radians)
-        z = d.m * np.sin(alt.radians)
-        sun_position = np.array([x, y, z], dtype=np.float32)
-        
-        if i % 20 == 0:
-            tqdm.write(f"\n{i}/{len(times)}  {t.utc_strftime('%Y-%m-%d %H:%M:%S')}")
-            tqdm.write(f"Solar alt: {alt.degrees:.2f}, az: {az.degrees:.2f}")
-            tqdm.write(f"sun position: {np.round(sun_position, 2)}")
-
-        terrain.sw_dir_cor(sun_position, sw_dir_cor_buffer)
-
-        comp_time_sw_dir_cor.append((time() - t_beg))
-
-        ncfile = Dataset(filename=out_file, mode="a")
-        nc_time = ncfile.variables["time"]
-        nc_time[i] = date2num(timestamp, units=nc_time.units,
-                            calendar=nc_time.calendar)
-         # Store sun position
-        ncfile.variables["sun_x"][i] = x
-        ncfile.variables["sun_y"][i] = y
-        ncfile.variables["sun_z"][i] = z
-        nc_data = ncfile.variables["sw_dir_cor"]
-        nc_data[i, :, :] = sw_dir_cor_buffer
-        ncfile.close()
-        
-    # -----------------------------------------------------------------------------
-    # Analyse performance of correction factor
-    # -----------------------------------------------------------------------------   
-    # Performance plot
-    fig = plt.figure(figsize=(10, 6))
-    plt.plot(times, comp_time_sw_dir_cor, lw=1.5, color="red",
-            label="SW_dir_cor (mean: %.2f"
-                % np.array(comp_time_sw_dir_cor).mean() + ")")
-    plt.ylabel("Computing time [seconds]")
-    plt.legend(loc="upper center", frameon=False, fontsize=11)
-    plt.title("Terrain size (" + str(dim_in_0) + " x " + str(dim_in_1) + ")",
-            fontweight="bold", fontsize=12)
-    performance_outpath = out_dir + "/Performance.png"
-    fig.savefig(performance_outpath, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Performance plot saved to {performance_outpath}.")
-
-    return out_file
     
 
 def simulate_annual_ghi():
@@ -351,33 +79,33 @@ def get_closest_lut_entry(lut, unique_values, doy, hour, albedo, altitude_km,
             idx = np.argmin(np.abs(array - value))
             return array[idx]
     
-    doy_bin = closest(doy, unique_values['DOY'])
-    hour_bin = closest(hour, unique_values['Hour'])
-    albedo_bin = closest(albedo, unique_values['Albedo'])
-    alt_bin = closest(altitude_km, unique_values['Altitude_km'])
+    doy_bin = closest(doy, unique_values['doy'])
+    hour_bin = closest(hour, unique_values['hour'])
+    albedo_bin = closest(albedo, unique_values['albedo'])
+    alt_bin = closest(altitude_km, unique_values['altitude_km'])
     
     # Optional cloud parameters
-    cloud_top_bin = closest(cloud_top_km, unique_values['CloudTop_km']) if cloud_top_km is not None else None
-    tau_bin = closest(cot, unique_values['Tau550']) if cot is not None else None
-    cloud_type_bin = closest(cloud_phase, unique_values['CloudType']) if cloud_phase is not None else None
+    cloud_top_bin = closest(cloud_top_km, unique_values['cloud_top_km']) if cloud_top_km is not None else None
+    tau_bin = closest(cot, unique_values['cot']) if cot is not None else None
+    cloud_type_bin = closest(cloud_phase, unique_values['cloud_phase']) if cloud_phase is not None else None
     
     if verbose: 
         print(f"Closest LUT bin found: {doy_bin}, {hour_bin}, {albedo_bin}, {alt_bin}, cth: {cloud_top_bin:.3f}, cot: {tau_bin}, cph: {cloud_type_bin}")
 
     # Filter LUT by closest bins
     df_filtered = lut[
-        (lut['DOY'] == doy_bin) &
-        (lut['Hour'] == hour_bin) &
-        (lut['Albedo'] == albedo_bin) &
-        (lut['Altitude_km'] == alt_bin)
+        (lut['doy'] == doy_bin) &
+        (lut['hour'] == hour_bin) &
+        (lut['albedo'] == albedo_bin) &
+        (lut['altitude_km'] == alt_bin)
     ]
     
     # If cloud parameters are provided, further filter
     if cloud_top_bin is not None:
         df_filtered = df_filtered[
-            (df_filtered['CloudTop_km'] == cloud_top_bin) &
-            (df_filtered['Tau550'] == tau_bin) &
-            (df_filtered['CloudType'] == cloud_type_bin)
+            (df_filtered['cloud_top_km'] == cloud_top_bin) &
+            (df_filtered['cot'] == tau_bin) &
+            (df_filtered['cloud_phase'] == cloud_type_bin)
         ]
         
     # Return the irradiance values
@@ -391,12 +119,12 @@ def get_closest_lut_entry(lut, unique_values, doy, hour, albedo, altitude_km,
     # Take the first row (or you could take mean if multiple matches)
     row = df_filtered.iloc[0]
     
-    direct_clear = row['Direct_clear']
-    diffuse_clear = row['Diffuse_clear']
+    direct_clear = row['direct_clear']
+    diffuse_clear = row['diffuse_clear']
     
     if cloud_top_bin is not None:
-        direct_cloudy = row['Direct_cloudy']
-        diffuse_cloudy = row['Diffuse_cloudy']
+        direct_cloudy = row['direct_cloudy']
+        diffuse_cloudy = row['diffuse_cloudy']
     else:
         direct_cloudy = None
         diffuse_cloudy = None
@@ -409,21 +137,86 @@ def get_closest_lut_entry(lut, unique_values, doy, hour, albedo, altitude_km,
     return res_dict
 
 
-def get_sw_cor_idx(sw_cor_times, timestamp, verbose = False): 
-    """Given timestamp, read the observation with the closest timestamp from sw_cor_path nc file."""
+def idx_from_time(times_array, timestamp, by_time_of_year=False, max_delta=1.0, verbose=False):
+    """
+    Given a timestamp, find the index of the closest observation in times_array.
     
-    # Ensure timestamp is numpy datetime64[ns]
-    # Conver to timestamp without timezone, numpy does not like timezone
+    Parameters
+    ----------
+    times_array : np.ndarray
+        Array of np.datetime64 timestamps.
+    timestamp : datetime-like
+        Target time to match.
+    by_time_of_year : bool, optional
+        If True, match by day-of-year first (±16 days allowed), then by hour-of-day (within max_delta hours).
+    max_delta : float, optional
+        Maximum allowed time difference in hours (for hour-of-day comparison).
+    verbose : bool, optional
+        Print additional information.
+    """
+    # Ensure timestamp is timezone-free and numpy datetime64
     if hasattr(timestamp, "tzinfo") and timestamp.tzinfo is not None:
         timestamp = timestamp.tz_convert("UTC").tz_localize(None)
     timestamp = np.datetime64(timestamp, "ns")
-    
-    # Find closest time index
-    idx = np.argmin(np.abs(sw_cor_times - timestamp))
-    closest_time = sw_cor_times[idx]
-    if verbose:
-        print(f"Closest time to {timestamp} is {closest_time}.")    
-    
+
+    if by_time_of_year:
+        ts = pd.Timestamp(timestamp)
+        target_doy = ts.day_of_year
+        target_hour = ts.hour + ts.minute / 60.0
+
+        pd_times = pd.to_datetime(times_array)
+        doys = pd_times.day_of_year
+        hours = pd_times.hour + pd_times.minute / 60.0
+
+        # --- Step 1: Find closest day of year ---
+        doy_diff = np.abs(doys - target_doy)
+        doy_diff = np.minimum(doy_diff, 365 - doy_diff)  # handle wrap-around (Dec/Jan)
+        doy_idx = np.argmin(doy_diff)
+        min_doy_diff = doy_diff[doy_idx]
+
+        if verbose:
+            print(f"[by_time_of_year] Closest DOY: {doys[doy_idx]} (ΔDOY={min_doy_diff:.1f} days)")
+
+        if min_doy_diff > 8:
+            raise ValueError(
+                f"No close match found (by_time_of_year): nearest DOY {doys[doy_idx]} "
+                f"is {min_doy_diff:.1f} days from target {target_doy}."
+            )
+
+        # --- Step 2: Among entries with that DOY, find closest hour ---
+        same_doy_mask = doy_diff == min_doy_diff
+        hour_diff = np.abs(hours[same_doy_mask] - target_hour)
+        hour_idx_local = np.argmin(hour_diff)
+        min_hour_diff = hour_diff[hour_idx_local]
+
+        # Map back to global index
+        global_indices = np.where(same_doy_mask)[0]
+        idx = global_indices[hour_idx_local]
+
+        if verbose:
+            print(f"[by_time_of_year] Closest hour: {hours[idx]:.2f} (Δhour={min_hour_diff:.2f} h) "
+                  f"→ Closest time: {times_array[idx]}")
+
+        if min_hour_diff > max_delta:
+            raise ValueError(
+                f"No close hour match: nearest timestamp {times_array[idx]} is "
+                f"{min_hour_diff:.2f} hours from target hour {target_hour:.2f}."
+            )
+
+    else:
+        # Standard direct timestamp matching
+        idx = np.argmin(np.abs(times_array - timestamp))
+        closest_time = times_array[idx]
+        delta = np.abs(closest_time - timestamp).astype("timedelta64[m]").astype(float) / 60.0
+
+        if verbose:
+            print(f"Closest time to {timestamp} is {closest_time} ({delta:.3f} hours apart).")
+
+        if delta >= max_delta:
+            raise ValueError(
+                f"No close match found: nearest timestamp {closest_time} is {delta:.2f} hours from {timestamp}."
+            )
+
     return idx
 
 
@@ -478,22 +271,7 @@ def nc_to_raster_meta(ds):
     return transform, (nrows, ncols), (lon.min(), lat.max(), lon.max(), lat.min())
 
 
-def reproject_shadow_to_nc(shadow_mask, shadow_transform, nc_transform, nc_shape):
-    dst = np.zeros(nc_shape, dtype=np.uint8)
-
-    reproject(
-        source=shadow_mask,
-        destination=dst,
-        src_transform=shadow_transform,
-        src_crs="EPSG:4326",       # or the CRS of your GeoTIFF
-        dst_transform=nc_transform,
-        dst_crs="EPSG:4326",       # or CRS of your NetCDF
-        resampling=Resampling.nearest
-    )
-    return dst 
-
-
-def total_ghi_from_sat_imgs(sat_cloud_mask_filepath, cloud_cover_filepath, LUT_filepath,
+def total_ghi_from_sat_imgs(cloud_shadow_path, cloud_cover_filepath, LUT_filepath,
                                sw_cor_path, out_nc_file,
                                mixed_threshold, overcast_threshold, verbose=False):
     """Compute total GHI from satellite images and save directly to NetCDF per iteration."""
@@ -513,25 +291,43 @@ def total_ghi_from_sat_imgs(sat_cloud_mask_filepath, cloud_cover_filepath, LUT_f
 
     # Surface albedo
     surface_albedo = cloud_props["blue_sky_albedo_median"].mean()
-    median_sat_zen = cloud_props["MEAN_ZENITH"].median()
-    median_sat_azi = cloud_props["MEAN_AZIMUTH"].median()
 
     # Read LUT and unique values
     lut = pd.read_csv(LUT_filepath)
-    variables = ["DOY", "Hour", "Albedo", "Altitude_km", "CloudTop_km", "Tau550", "CloudType"]
+    variables = ["doy", "hour", "albedo", "altitude_km", "cloud_top_km", "cot", "cloud_phase"]
     unique_values = {var: lut[var].unique() for var in variables if var in lut.columns}
 
     # SW correction factors
-    ds_sw = xr.open_dataset(sw_cor_path)
-    sw_cor_times = ds_sw["time"].values
-    lat = ds_sw["lat"].values
-    lon = ds_sw["lon"].values
-    shape_lat = len(lat)
-    shape_lon = len(lon)
+    if sw_cor_path is not None:
+        ds_dir_cor = xr.open_dataset(sw_cor_path)
+        dir_cor_times = ds_dir_cor["time"].values
+        dir_cor_lat = ds_dir_cor["lat"].values
+        dir_cor_lon = ds_dir_cor["lon"].values
+        shape_dir_cor_lat = len(dir_cor_lat)
+        shape_dir_cor_lon = len(dir_cor_lon)
+    
+    # Cloud shadows
+    ds_cloud_shadow = xr.open_dataset(cloud_shadow_path)
+    cloud_shadow_times = ds_cloud_shadow["time"].values
+    cloud_shadow_lat = ds_cloud_shadow["lat"].values
+    cloud_shadow_lon = ds_cloud_shadow["lon"].values
+    shape_cloud_shadow_lat = len(cloud_shadow_lat)
+    shape_cloud_shadow_lon = len(cloud_shadow_lon)
 
     # -----------------------------------------------------------------------------
     # Create NetCDF file if it does not exist
     # -----------------------------------------------------------------------------
+    if sw_cor_path is not None: 
+        shape_lat = shape_dir_cor_lat
+        shape_lon = shape_dir_cor_lon
+        lat = dir_cor_lat
+        lon = dir_cor_lon
+    else: 
+        shape_lat = shape_cloud_shadow_lat
+        shape_lon = shape_cloud_shadow_lon
+        lat = cloud_shadow_lat
+        lon = cloud_shadow_lon
+        
     if not os.path.exists(out_nc_file):
         os.makedirs(os.path.dirname(out_nc_file), exist_ok=True)
         ncfile = Dataset(out_nc_file, mode="w")
@@ -601,6 +397,13 @@ def total_ghi_from_sat_imgs(sat_cloud_mask_filepath, cloud_cover_filepath, LUT_f
 
         # ---------------- Clear Sky ----------------
         if cloud_cover_large <= mixed_threshold:
+            # Get direct correction factor, or skip clear days
+            if sw_cor_path is not None: 
+                idx_sw = idx_from_time(dir_cor_times, dt,by_time_of_year=True, max_delta=1, verbose=verbose)
+                dir_cor = ds_dir_cor["sw_dir_cor"].isel(time=idx_sw).values
+            else : 
+                continue
+            
             res_dict = get_closest_lut_entry(lut, unique_values, doy, hour,
                                              surface_albedo, altitude)
             direct_clear = res_dict["direct_clear"]
@@ -609,12 +412,18 @@ def total_ghi_from_sat_imgs(sat_cloud_mask_filepath, cloud_cover_filepath, LUT_f
                 tqdm.write(f"Skip {dt}: no data returned. Direct clear: {direct_clear}, Diffuse clear: {diffuse_clear}.")
                 tqdm.write(f"Inputs to LUT: DOY {doy}, hour {hour}.")
                 continue
-            idx_sw = get_sw_cor_idx(sw_cor_times, dt)
-            sw_dir_cor = ds_sw["sw_dir_cor"].isel(time=idx_sw).values
-            GHI_total = sw_dir_cor * direct_clear + diffuse_clear
+                
+            GHI_total = dir_cor * direct_clear + diffuse_clear
 
         # ---------------- Overcast ----------------
         elif cloud_cover_large >= overcast_threshold:
+            # Get direct correction factor, or skip overcast days
+            if sw_cor_path is not None:
+                idx_sw = idx_from_time(dir_cor_times, dt, by_time_of_year=True, max_delta=1, verbose=verbose)
+                dir_cor = ds_dir_cor["sw_dir_cor"].isel(time=idx_sw).values
+            else : 
+                continue
+            
             COT, CTH, CPH = get_cloud_properties(row, monthly_medians,month, verbose=verbose)
             res_dict = get_closest_lut_entry(lut, unique_values, doy, hour,
                                              surface_albedo, altitude,
@@ -625,51 +434,42 @@ def total_ghi_from_sat_imgs(sat_cloud_mask_filepath, cloud_cover_filepath, LUT_f
                 tqdm.write(f"Skip {dt}: no data returned. Direct cloudy: {direct_cloudy}, Diffuse cloudy: {diffuse_cloudy}.")
                 tqdm.write(f"Inputs to LUT: DOY {doy}, hour {hour}, CTH {CTH}, COT {COT}, CPH {CPH}.")
                 continue
-            idx_sw = get_sw_cor_idx(sw_cor_times, dt)
-            sw_dir_cor = ds_sw["sw_dir_cor"].isel(time=idx_sw).values
-            
-            GHI_total = sw_dir_cor * direct_cloudy + diffuse_cloudy
+     
+            GHI_total = dir_cor * direct_cloudy + diffuse_cloudy
 
         # ---------------- Mixed ----------------
         else:
-            # Mixed: compute per-pixel
-            date = dt.strftime("%Y-%m-%d")
-            pattern = os.path.join(sat_cloud_mask_filepath, f"S2_cloud_mask_large_{date}_*.tif")
-            files = glob.glob(pattern)
-            if len(files) != 1:
-                tqdm.write(f"Skip {dt} because no files were found for this pattern: {pattern}.")
-                continue
-            cloud_mask_path = files[0]
-
-            COT, CTH, CPH = get_cloud_properties(row, monthly_medians, month, verbose=verbose)
-            solar_zenith, solar_azimuth = get_solar_angle(dt)
-            if solar_zenith > 85:
-                tqdm.write(f"Skip {dt} because SZA > 85 (SZA={solar_zenith:.2f}).")
-                continue
+            try:
+                # Read cloud shadow
+                idx_cloud_shadow = idx_from_time(cloud_shadow_times, dt, max_delta=1/60, verbose=verbose)
+            except ValueError as e: 
+                # Skip if date is not found 
+                tqdm.write(f"⏩ Skipping {dt}: {e}")
+                continue 
             
-            sat_zenith, sat_azimuth = row["MEAN_ZENITH"], row["MEAN_AZIMUTH"]
-            # Replace missing satellite angles with alltime median
-            if pd.isna(sat_zenith) or pd.isna(sat_azimuth):
-                sat_zenith, sat_azimuth = median_sat_zen, median_sat_azi
-            # Compute cloud shadow
-            cth_m = CTH * 1000.0
-            cbh_m = cth_m - 1000.0
-            dx_pix, dy_pix = get_cloud_shadow_displacement(
-                solar_zenith, solar_azimuth, cbh_m,
-                sat_zenith, sat_azimuth, pixel_size=10, cloud_top_height=cth_m
-            )
-            shadow_mask, _ = project_cloud_shadow(cloud_mask_path, dy_pix, dx_pix, BBOX)
-            # TODO: this is just a quick fix - make sure the pixels align location-wise
-            # Pad cloud shadow to match sw_dir_cor shape
-            idx_sw = get_sw_cor_idx(sw_cor_times, dt)
-            sw_dir_cor = ds_sw["sw_dir_cor"].isel(time=idx_sw).values
-            nrows, ncols = shadow_mask.shape
-            target_rows, target_cols = sw_dir_cor.shape
-            pad_rows = target_rows - nrows
-            pad_cols = target_cols - ncols
-            shadow_mask = np.pad(shadow_mask, ((0,pad_rows),(0,pad_cols)),
+            cloud_shadow_mask = ds_cloud_shadow["shadow_mask"].isel(time=idx_cloud_shadow).values
+            
+            # Get direct correction factor and match shapes
+            if sw_cor_path is not None: 
+                idx_sw = idx_from_time(dir_cor_times, dt, by_time_of_year=True, max_delta=1, verbose=verbose)
+                dir_cor = ds_dir_cor["sw_dir_cor"].isel(time=idx_sw).values
+                nrows, ncols = cloud_shadow_mask.shape
+                target_rows, target_cols = dir_cor.shape
+                
+                # Assert only small shape differences and shadow mask smaller than sw_dir mask
+                assert 0 <= (target_rows - nrows) < 5, f"Shape differences between cloud shadow : ({nrows},{ncols}) and sw dir cor : ({target_rows}, {target_cols})"
+                assert 0 <= (target_cols - ncols) < 5, f"Shape differences between cloud shadow : ({nrows},{ncols}) and sw dir cor : ({target_rows}, {target_cols})"
+                
+                # Fill missing rows in cloud shadow with "clear" cells (no cloud shadow at border)
+                pad_rows = target_rows - nrows
+                pad_cols = target_cols - ncols
+                cloud_shadow_mask = np.pad(cloud_shadow_mask, ((0,pad_rows),(0,pad_cols)),
                                  mode="constant", constant_values=False)
+            else: 
+                dir_cor = np.full(shape=(len(cloud_shadow_lat), len(cloud_shadow_lon)), fill_value=1.0)
+               
             # get LUT entries
+            COT, CTH, CPH = get_cloud_properties(row, monthly_medians, month, verbose=verbose)
             res_dict = get_closest_lut_entry(lut, unique_values, doy, hour,
                                              surface_albedo, altitude,
                                              CTH, COT, CPH, verbose=verbose)
@@ -688,8 +488,8 @@ def total_ghi_from_sat_imgs(sat_cloud_mask_filepath, cloud_cover_filepath, LUT_f
                 continue
             
             # Compute Ghi total
-            GHI_total = np.where(shadow_mask, sw_dir_cor*direct_cloudy + diffuse_cloudy,
-                                 sw_dir_cor*direct_clear + diffuse_clear)
+            GHI_total = np.where(cloud_shadow_mask, dir_cor*direct_cloudy + diffuse_cloudy,
+                                 dir_cor*direct_clear + diffuse_clear)
         
         if GHI_total is None:
             print(f"Skipped at {dt} because GHI_total is None. res_dict: {res_dict}")
@@ -703,22 +503,179 @@ def total_ghi_from_sat_imgs(sat_cloud_mask_filepath, cloud_cover_filepath, LUT_f
             ncfile.variables["GHI_total"][i,:,:] = GHI_total
             ncfile.close()
 
-    ds_sw.close()
+    if sw_cor_path is not None:
+        ds_dir_cor.close()
+    ds_cloud_shadow.close()
     print(f"GHI maps saved incrementally to {out_nc_file}")
    
+   
+def simulate_stations_pixels_corrected(cloud_cover_filepath, lut_filepath, cloud_shadow_path, verbose=False):
+    sim_vs_obs = pd.read_csv(cloud_cover_filepath)
+    sim_vs_obs["date"] = pd.to_datetime(sim_vs_obs["date"], format="%Y-%m-%d")
+    sim_vs_obs["month"] = sim_vs_obs["date"].dt.month
+    # Prepare new columns for GHI components
+    sim_vs_obs["total_clear_sky"] = np.nan
+    sim_vs_obs["florida_direct"] = np.nan
+    sim_vs_obs["florida_diffuse"] = np.nan
+    sim_vs_obs["flesland_direct"] = np.nan
+    sim_vs_obs["flesland_diffuse"] = np.nan
+    sim_vs_obs["flesland_cloud_shadow"] = np.nan
+    sim_vs_obs["flesland_cloud_shadow"] = np.where(
+    sim_vs_obs["cloud_cover_large"] >= OVERCAST_THRESHOLD, 1, # always shadow for overcast 
+        np.where(sim_vs_obs["cloud_cover_large"] <= MIXED_THRESHOLD, 0, np.nan) # never shadow for clear sky
+    )
+    sim_vs_obs["florida_cloud_shadow"] = sim_vs_obs["flesland_cloud_shadow"] # Copy 
+
+    # Default monthly medians
+    monthly_medians = (
+        sim_vs_obs.groupby("month")[["cot_median_small","cth_median_small","cph_median_small"]]
+        .median().reset_index()
+    )
+
+    # Surface albedo
+    surface_albedo = sim_vs_obs["blue_sky_albedo_median"].mean()
+
+    # Read LUT and unique values
+    lut = pd.read_csv(lut_filepath)
+    variables = ["doy", "hour", "albedo", "altitude_km", "cloud_top_km", "cot", "cloud_phase"]
+    unique_values = {var: lut[var].unique() for var in variables if var in lut.columns}
+    
+    # Cloud shadows
+    ds_cloud_shadow = xr.open_dataset(cloud_shadow_path)
+    cloud_shadow_times = ds_cloud_shadow["time"].values
+    lats = ds_cloud_shadow["lat"].values
+    lons = ds_cloud_shadow["lon"].values
+
+    flesland_ilat = np.abs(lats - FLESLAND_LAT).argmin()
+    flesland_ilon = np.abs(lons - FLESLAND_LON).argmin()
+    florida_ilat = np.abs(lats - FLORIDA_LAT).argmin()
+    florida_ilon = np.abs(lons - FLORIDA_LON).argmin()
+    
+    if verbose: 
+        print(f"Flesland ilat: {flesland_ilat}, lat: {lats[flesland_ilat]}; ilon: {flesland_ilon}, lon: {lons[flesland_ilon]}")
+        print(f"Florida ilat: {florida_ilat}, lat: {lats[florida_ilat]}; ilon: {florida_ilon}, lon: {lons[florida_ilon]}")
+
+    # For each observation in sim vs obs dataframe, get GHI values from LUT and append to df. 
+    for idx, row in tqdm(sim_vs_obs.iterrows(), total=len(sim_vs_obs), desc="Processing rows"):
+        dt = pd.to_datetime(row['system:time_start_large'], unit='ms', utc=True)
+        month = row["month"]
+        doy = dt.timetuple().tm_yday
+        hour = dt.hour + round(dt.minute/60)
+        altitude = 0.08  # km
+        cloud_cover_large = row["cloud_cover_large"]
+        
+        # Fill theoretical clear-sky values 
+        res_dict_clear_sky = get_closest_lut_entry(lut, unique_values, doy, hour,
+                                             surface_albedo, altitude)
+        direct_clear = res_dict_clear_sky["direct_clear"]
+        diffuse_clear = res_dict_clear_sky["diffuse_clear"]
+        sim_vs_obs.at[idx,"total_clear_sky"] = direct_clear + diffuse_clear
+        
+        # ---------------- Clear Sky ----------------
+        if cloud_cover_large <= MIXED_THRESHOLD:
+            if not direct_clear is None: 
+                sim_vs_obs.at[idx,"florida_direct"] = direct_clear
+                sim_vs_obs.at[idx,"flesland_direct"] = direct_clear
+            if not diffuse_clear is None: 
+                sim_vs_obs.at[idx,"florida_diffuse"] = diffuse_clear            
+                sim_vs_obs.at[idx,"flesland_diffuse"] = diffuse_clear            
+            
+        # ---------------- Overcast ----------------
+        elif cloud_cover_large >= OVERCAST_THRESHOLD:
+            COT, CTH, CPH = get_cloud_properties(row, monthly_medians,month, verbose=verbose)
+            res_dict = get_closest_lut_entry(lut, unique_values, doy, hour,
+                                             surface_albedo, altitude,
+                                             CTH, COT, CPH, verbose=verbose)
+            direct_cloudy = res_dict["direct_cloudy"]
+            diffuse_cloudy = res_dict["diffuse_cloudy"]
+            
+            if not direct_cloudy is None: 
+                sim_vs_obs.at[idx,"florida_direct"] = direct_cloudy
+                sim_vs_obs.at[idx,"flesland_direct"] = direct_cloudy
+            if not diffuse_cloudy is None: 
+                sim_vs_obs.at[idx,"florida_diffuse"] = diffuse_cloudy
+                sim_vs_obs.at[idx,"flesland_diffuse"] = diffuse_cloudy
+            
+        # ---------------- Mixed ----------------
+        else:
+            try:
+                # Read cloud shadow
+                idx_cloud_shadow = idx_from_time(cloud_shadow_times, dt, max_delta=1/60, verbose=verbose)
+            except ValueError as e: 
+                # Skip if date is not found 
+                tqdm.write(f"⏩ Skipping {dt}: {e}")
+                continue 
+            
+            cloud_shadow_mask = ds_cloud_shadow["shadow_mask"].isel(time=idx_cloud_shadow).values
+            # Extract pixel values at Flesland and Florida
+            flesland_cloud_shadow = cloud_shadow_mask[flesland_ilat, flesland_ilon]
+            florida_cloud_shadow = cloud_shadow_mask[florida_ilat, florida_ilon]
+
+            if verbose: 
+                print(f"Flesland shadow value: {flesland_cloud_shadow}")
+                print(f"Florida shadow value: {florida_cloud_shadow}")
+            
+            sim_vs_obs.at[idx,"florida_cloud_shadow"] = florida_cloud_shadow
+            sim_vs_obs.at[idx,"flesland_cloud_shadow"] = flesland_cloud_shadow
+            
+            # get LUT entries
+            COT, CTH, CPH = get_cloud_properties(row, monthly_medians, month, verbose=verbose)
+            res_dict = get_closest_lut_entry(lut, unique_values, doy, hour,
+                                             surface_albedo, altitude,
+                                             CTH, COT, CPH, verbose=verbose)
+            
+            direct_clear = res_dict["direct_clear"]
+            diffuse_clear = res_dict["diffuse_clear"]
+            direct_cloudy = res_dict["direct_cloudy"]
+            diffuse_cloudy = res_dict["diffuse_cloudy"]
+            
+            if florida_cloud_shadow == 1: 
+                sim_vs_obs.at[idx,"florida_direct"] = direct_cloudy
+                sim_vs_obs.at[idx,"florida_diffuse"] = diffuse_cloudy
+            elif florida_cloud_shadow == 0: 
+                sim_vs_obs.at[idx,"florida_direct"] = direct_clear
+                sim_vs_obs.at[idx,"florida_diffuse"] = diffuse_clear
+            else : 
+                print(f"Warning! Model not implemented for cloud mask value {florida_cloud_shadow}. (set at Florida)")
+
+            if flesland_cloud_shadow == 1: 
+                sim_vs_obs.at[idx,"flesland_direct"] = direct_cloudy
+                sim_vs_obs.at[idx,"flesland_diffuse"] = diffuse_cloudy
+            elif flesland_cloud_shadow == 0: 
+                sim_vs_obs.at[idx,"flesland_direct"] = direct_clear
+                sim_vs_obs.at[idx,"flesland_diffuse"] = diffuse_clear
+            else : 
+                print(f"Warning! Model not implemented for cloud mask value {flesland_cloud_shadow}. (set at Flesland)")
+
+    sim_vs_obs["florida_ghi_sim_horizontal"] = sim_vs_obs["florida_direct"] + sim_vs_obs["florida_diffuse"]
+    sim_vs_obs["flesland_ghi_sim_horizontal"] = sim_vs_obs["flesland_direct"] + sim_vs_obs["flesland_diffuse"]
+    
+    sub_new_vars = sim_vs_obs[["date", "cloud_cover_large", "total_clear_sky"]]
+    print(f"Head of df with new variables: \n{sub_new_vars.head()}")
+    print(f"Summary of df with new variables: \n{sub_new_vars.describe()}")
+    print(f"Summary of df with new variables: \n{sub_new_vars.describe()}")
+        
+    return sim_vs_obs
+
+
 
 if __name__ == "__main__": 
     # Paths
-    cloud_cover_table_filepath = "data/processed/s2_cloud_cover_table_small_and_large_with_cloud_props.csv"
+    cloud_cover_table_filepath = "data/processed/s2_cloud_cover_table_small_and_large_with_stations_data.csv"
     DSM_filepath = "data/processed/bergen_dsm_10m_epsg4326.tif"
-    sw_cor_filepath = "data/processed/sw_cor/sw_cor_bergen.nc"
+    sw_cor_filepath = "data/processed/sw_cor/sw_cor_bergen.nc" # new sw_cor_dir with mean reducer
     s2_cloud_mask_folderpath = "data/raw/S2_cloud_mask_large"
-    lut_filepath = "data/processed/LUT/LUT.csv"
+    lut_filepath = "data/processed/LUT/claas3/LUT.csv" # new LUT with Claas3 cloud properties
+    cloud_shadow_filepath = "data/processed/cloud_shadow_thresh40.nc"
     cloud_props = pd.read_csv(cloud_cover_table_filepath) 
-
+    outpath_new_florida_flesland_sim = "data/processed/s2_cloud_cover_with_stations_with_pixel_sim.csv"
         
-    total_ghi_from_sat_imgs(s2_cloud_mask_folderpath, cloud_cover_table_filepath, lut_filepath,
-                            sw_cor_path=sw_cor_filepath, out_nc_file="data/processed/simulated_ghi.nc",
+    total_ghi_from_sat_imgs(cloud_shadow_filepath, cloud_cover_table_filepath, lut_filepath,
+                            sw_cor_path=None, out_nc_file="data/processed/simulated_ghi_without_terrain_only_mixed.nc",
                             mixed_threshold=1, overcast_threshold=99, verbose=False)
 
-    
+    """ df = simulate_stations_pixels_corrected(cloud_cover_filepath=cloud_cover_table_filepath,
+                                       lut_filepath=lut_filepath, 
+                                       cloud_shadow_path=cloud_shadow_filepath,
+                                       verbose=False)
+    df.to_csv(outpath_new_florida_flesland_sim, index=False) """

@@ -1,79 +1,17 @@
 import rasterio
 import matplotlib.pyplot as plt
+from matplotlib.colors import Normalize
 import geopandas as gpd
 from rasterio.features import dataset_features
 from shapely.affinity import scale
 from shapely.geometry import shape
 import numpy as np
+from src.plotting.high_res_maps import plot_single_tif
 
 def plot_map_with_elevation(dsm_filepath, coastline_filepath, roads_filepath, buildings_filepath):
     """Plot DSM elevation with coastline, roads and buildings (clipped to DSM extent)"""
 
-    # ---------------------------
-    # Load elevation raster
-    # ---------------------------
-    with rasterio.open(dsm_filepath) as src:
-        elevation = src.read(1, masked=True)  # masked array handles NoData
-        extent = [
-            src.bounds.left,
-            src.bounds.right,
-            src.bounds.bottom,
-            src.bounds.top,
-        ]
-        transform = src.transform
-
-        # Create mask polygon from valid data
-        mask_shapes = dataset_features(src, bidx=1, sampling=1, geographic=True)
-        mask_polygons = [shape(feat["geometry"]) for feat in mask_shapes]
-
-    # ---------------------------
-    # Load vector data
-    # ---------------------------
-    coastline = gpd.read_file(coastline_filepath)
-    roads = gpd.read_file(roads_filepath)
-    buildings = gpd.read_file(buildings_filepath)
-
-    # Clip coastline and roads to DSM valid data
-    if mask_polygons:
-        mask_union = gpd.GeoSeries(mask_polygons).unary_union
-        coastline = gpd.clip(coastline, mask_union)
-        roads = gpd.clip(roads, mask_union)
-        buildings = gpd.clip(buildings, mask_union)
-
-    # Enlarge building footprints by factor 5
-    buildings["geometry"] = buildings.geometry.apply(
-        lambda g: scale(g, xfact=5, yfact=5, origin="center")
-    )
-
-    # ---------------------------
-    # Plot combined map
-    # ---------------------------
-    fig, ax = plt.subplots(figsize=(12, 12))
-
-    # Raster background
-    im = ax.imshow(
-        elevation,
-        cmap="terrain",
-        extent=extent,
-        origin="upper"
-    )
-    cbar = plt.colorbar(im, ax=ax, shrink=0.7)
-    cbar.set_label("Elevation (m)")
-
-    # Vector overlays
-    buildings.plot(ax=ax, color="red", alpha=0.5, label="Buildings (enlarged ×5)")
-    roads.plot(ax=ax, color="blue", linewidth=1, label="Primary Roads (clipped)")
-    coastline.plot(ax=ax, color="black", linewidth=1.2, label="Coastline (clipped)")
-
-    # Annotations
-    ax.set_title("Bergen Map with Elevation, Roads, and Buildings", fontsize=16)
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
-    ax.legend()
-
-    plt.tight_layout()
-    plt.savefig("output/bergen_map_with_elevation.png", dpi=300)
-    plt.show()
+    plot_single_tif(dsm_filepath)
 
 
 def summarize_dsm(dsm_filepath):
@@ -119,4 +57,24 @@ if __name__ == "__main__":
         "data/roads_primary.geojson",
         "data/building_footprints_bergen.geojson"
     ) """
-    summarize_dsm(dsm_filepath)
+    cmap = plt.cm.terrain
+    norm = Normalize(vmin=0, vmax=800)  # meters
+    landmarks = {
+        # Islands / Municipal areas
+        "Litlesotra": (60.35858, 5.11),       # from Mapcarta / Wikipedia :contentReference[oaicite:0]{index=0}
+        "Askøy": (60.46, 5.16),           # from LatLong.net :contentReference[oaicite:1]{index=1}
+        "Sotra": (60.29, 5.105),                # approximate from Sotra location listing :contentReference[oaicite:2]{index=2}
+        # Outskirts / suburbs
+        "Mjølkeråen": (60.4885, 5.265),          # from Mapcarta :contentReference[oaicite:3]{index=3}
+        # Island northeast of Bergen
+        "Osterøy": (60.47, 5.49),               # from Wikipedia coordinates of the island :contentReference[oaicite:4]{index=4}
+        "Gullfjellet →": (60.34, 5.48)
+    }
+    buildings_path = "data/raw/building_footprints_bergen.geojson"
+    plot_single_tif(dsm_filepath, outpath="output/bergen_roi_map.png", 
+                    title="Study Area (Bergen)", 
+                    colorbar_label="Elevation (m)", 
+                    cmap=cmap,
+                    norm=norm, 
+                    extra_layers=[buildings_path],
+                    extra_landmarks=landmarks)

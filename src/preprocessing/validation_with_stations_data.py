@@ -51,12 +51,12 @@ def merge_by_closest_timestamp(obs_table_path, frost_table_path):
     return obs_table
 
 
-def extract_pixel_by_location(nc_filepath, pixel_lat, pixel_lon): 
+def extract_pixel_by_location(nc_filepath, pixel_lat, pixel_lon, var_name="GHI_total"): 
     """Return the time series for a pixel given its location from a .nc file with dimensions [time, lat, lon]."""
     # Open your NetCDF file
     nc = Dataset(nc_filepath)
 
-    ghi = nc.variables["GHI_total"]   # shape: (time, lat, lon)
+    var = nc.variables[var_name]   # shape: (time, lat, lon)
     lats = nc.variables["lat"][:]
     lons = nc.variables["lon"][:]
     
@@ -71,8 +71,9 @@ def extract_pixel_by_location(nc_filepath, pixel_lat, pixel_lon):
     times = num2date(time_var[:], units=time_var.units, calendar=time_var.calendar)
 
     # Extract pixel values
-    ghi_timeseries = ghi[:, ilat, ilon]
-    return times, ghi_timeseries
+    var_timeseries = var[:, ilat, ilon]
+    nc.close()
+    return times, var_timeseries
     
 def convert_cftime_to_datetime(val):
     if isinstance(val, DatetimeGregorian):
@@ -109,11 +110,12 @@ def add_simulated_florida_flesland_ghi_by_date(obs_table_path, df, out_path):
 
 
 
+
 if __name__ == "__main__": 
     obs_table_path = "data/processed/s2_cloud_cover_table_small_and_large_with_cloud_props.csv"
     frost_table_path = "data/processed/frost_ghi_1M_Flesland_Florida_10:30-11:30UTC.csv"
-    model_ghi_path = "data/processed/simulated_ghi.nc"
-    obs_with_stations_data_path = "data/processed/s2_cloud_cover_table_small_and_large_with_simulated_florida_flesland_ghi.csv"
+    model_ghi_path = "data/processed/simulated_ghi_thresh40.nc"
+    obs_with_stations_data_path = "data/processed/s2_cloud_cover_table_small_and_large_with_stations_data.csv"
     
     # Step 1: Merge Stations data with cloud_cover aso observations table
     """ obs_table = merge_by_closest_timestamp(obs_table_path, frost_table_path)
@@ -133,12 +135,12 @@ if __name__ == "__main__":
 
     times, Florida_ghi = extract_pixel_by_location(model_ghi_path, Florida_lat, Florida_lon)
     times, Flesland_ghi = extract_pixel_by_location(model_ghi_path, Flesland_lat, Flesland_lon)
-    df = pd.DataFrame({
+    extracted_pixels_df = pd.DataFrame({
         "time": times,
         "Florida_ghi_sim_ECAD": Florida_ghi,
         "Flesland_ghi_sim_ECAD": Flesland_ghi
     })
     out_path = "data/processed/s2_cloud_cover_table_small_and_large_with_simulated_florida_flesland_ghi.csv"
-    merged = add_simulated_florida_flesland_ghi_by_date(obs_with_stations_data_path, df, out_path)
+    merged = add_simulated_florida_flesland_ghi_by_date(obs_with_stations_data_path, extracted_pixels_df, out_path)
 
     

@@ -80,7 +80,6 @@ def add_viewing_angles(cloud_cover_filepath, viewing_angle_filepath, outpath):
             azimuth_dict[date] = group["MEAN_AZIMUTH"].values[0]
             zenith_dict[date] = group["MEAN_ZENITH"].values[0]
         else:
-            # Multiple observations: check your conditions
             if (all_same(group["SPACECRAFT_NAME"]) and
                 all_same(group["SENSING_ORBIT_DIRECTION"]) and
                 all_same(group["SENSING_ORBIT_NUMBER"]) and
@@ -120,6 +119,7 @@ if __name__ == "__main__":
     viewing_angles_folder_path = "data/processed/S2_viewing_angles"
     viewing_angles_table_path = "data/processed/S2_viewing_angles_full_table.csv"
     s2_inpath = "data/processed/s2_cloud_cover_table_small_and_large.csv"
+    plot_std_hist_of_daily_groups(viewing_angles_table_path)
     
     # merge into one 
     #merge_all_in_path(inpath, outpath)

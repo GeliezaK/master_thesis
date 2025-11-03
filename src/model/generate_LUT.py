@@ -101,7 +101,7 @@ CLOUD_TOP_HEIGHT = [0.575,  1.291,  2.008, 2.724,  3.440,  4.157,  4.873,  5.589
 
 # Cloud thickness (vertical extent) in km, from Sentinel-5P 
 # fixed at 1km, according to satellite data valid for large majority of clouds 
-CLOUD_VERTICAL_EXTENT = 1 
+CLOUD_GEOGRAPHICAL_THICKNESS = 1 
 
 # Cloud types
 CLOUD_PHASE = ['ice', 'water']
@@ -433,7 +433,7 @@ def generate_LUT():
 
         for cth, cot, cloud_phase in tqdm(product(CLOUD_TOP_HEIGHT, COT, CLOUD_PHASE),
             desc=f"☁ Inner loop (doy={doy}, h={hour})", leave=False):                                   
-            base = cth - CLOUD_VERTICAL_EXTENT
+            base = cth - CLOUD_GEOGRAPHICAL_THICKNESS
             # Set base to 0 if cth-vertical extent is smaller than 0 
             base = 0.0 if base < 0.0 else base 
 
@@ -498,6 +498,7 @@ def generate_uvspec_input(doy, hour, albedo, profile,
                           cloud_file=None, cloud_phase=None, cot=None):
     month = doy_to_date[doy][0]
     day = doy_to_date[doy][1]
+    # TODO: do this with solar angles instead of times and choose more values for CGT
     lines = [
         #"verbose", #disable for speed-up
         "latitude N 60.39", # Bergen latitude and longitude, combine with time to select SZA and atm_profile
@@ -515,7 +516,7 @@ def generate_uvspec_input(doy, hour, albedo, profile,
         f"albedo {albedo}",
         f"altitude {ALTITUDE}"
     ]
-
+    # TODO: change Tau to without 550nm here (new values from Claas)
     if cloud_file and cloud_phase and cot:
         if cloud_phase == "ice":
             lines.append(f"ic_file 1D {cloud_file}")
@@ -594,9 +595,13 @@ if __name__ == "__main__":
     #descriptive_stats_s5p(df)
     #evaluate_cluster_range(df)
     #labels, centroids = generate_cloud_classes(df, n_clusters=18)
-    generate_LUT()
-    #merge_LUT_files("output/LUT", "output/LUT/LUT.csv")
+    #generate_LUT()
+    #merge_LUT_files("data/processed/LUT/claas3", "data/processed/LUT/claas3/LUT.csv")
     #df_claas = pd.read_csv("data/processed/s2_cloud_cover_table_small_and_large_with_simulated_florida_flesland_ghi.csv")
     #df_claas = df_claas[["date", "blue_sky_albedo_median", "cot_median_small", "cth_median_small", "cph_median_small"]]
     #descriptive_stats_claas3(df_claas)
+    count = 0
+    for hod_list in HOD_DICT.values(): 
+        count += len(hod_list)
+    print(count)
     pass

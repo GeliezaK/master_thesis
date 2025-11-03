@@ -1,21 +1,19 @@
 import xarray as xr
-import glob, time, os
+import glob, os
 import pandas as pd
 import numpy as np
-import geopandas as gpd
-import math
-from functools import partial
+from netCDF4 import Dataset, date2num, num2date
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import seaborn as sns
 import cartopy.crs as ccrs
-import cartopy.io.shapereader as shpreader
 import cartopy.feature as cfeature
 import cartopy.mpl.ticker as cticker
 from pathlib import Path
+from datetime import datetime
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from src.model.surface_GHI_model import BBOX
+from src.model import BBOX, MIXED_THRESHOLD, OVERCAST_THRESHOLD
 
 def inspect_file(filepath, variable_name):
     # open the netCDF file
@@ -323,8 +321,8 @@ def plot_claas3_file(aux_path, claas3_file, var="cot"):
     values = sample[var].isel(time=0)                   # (y, x)
     
     # Bounding box
-    lat_min, lat_max = 59.3802344451226, 60.50219617276416
-    lon_min, lon_max = 4.739101855653983, 5.920898144346017
+    lat_min, lat_max = BBOX["south"], BBOX["north"]
+    lon_min, lon_max = BBOX["west"], BBOX["east"]
 
     # Build mask for bounding box
     mask = ((lat >= lat_min) & (lat <= lat_max) &
@@ -575,6 +573,433 @@ def compare_claas3_small_vs_large_roi(cloud_cover_filepath, selected_vars):
     print(f"Saved scatterplot to {outpath}.")
     
 
+def convert_ghi_to_clear_sky_index(irradiance_infile_nc, cloud_cover_table_path, clear_sky_index_outfile_nc=None):
+    """
+    Convert GHI_total to clear-sky index (GHI_total / total_clear_sky) and
+    save incrementally to NetCDF (no full array in memory).
+
+    Parameters
+    ----------
+    irradiance_infile_nc : str
+        Path to NetCDF containing variable 'GHI_total'.
+    cloud_cover_table_path : str
+        CSV with columns ['date', 'total_clear_sky'].
+    clear_sky_index_outfile_nc : str or None
+        If None: append 'clear_sky_index' variable to input file.
+        If str: create a new NetCDF file (copied metadata + new variable).
+    """
+    
+    # --- Load cloud cover table ---
+    df = pd.read_csv(cloud_cover_table_path)
+    df["date"] = pd.to_datetime(df["date"])
+    
+    # --- Open input file (read-only first) ---
+    src = Dataset(irradiance_infile_nc, "r")
+    time_var = src.variables["time"]
+    times = num2date(time_var[:], units=time_var.units, calendar=getattr(time_var, "calendar", "standard"))
+    ghi_var = src.variables["GHI_total"]
+    times_dates = np.array([datetime(t.year, t.month, t.day).date() for t in times])
+
+    # --- Prepare output file ---
+    if clear_sky_index_outfile_nc is None:
+        # Append to same file
+        src.close()
+        dst = Dataset(irradiance_infile_nc, "a")
+        if "clear_sky_index" not in dst.variables:
+            v = dst.createVariable("clear_sky_index", "f4", ("time", "lat", "lon"), zlib=True, complevel=4)
+            v.long_name = "Clear-sky index (GHI_total / GHI_clear)"
+            v.units = "1"
+        var_out = dst.variables["clear_sky_index"]
+    else:
+        # Create new file with same structure
+        dst = Dataset(clear_sky_index_outfile_nc, "w")
+        # Copy dimensions
+        for name, dim in src.dimensions.items():
+            dst.createDimension(name, (len(dim) if not dim.isunlimited() else None))
+        # Copy coordinate variables
+        for name in ["time", "lat", "lon"]:
+            in_var = src.variables[name]
+            out_var = dst.createVariable(name, in_var.datatype, in_var.dimensions)
+            out_var.setncatts({k: in_var.getncattr(k) for k in in_var.ncattrs()})
+            out_var[:] = in_var[:]
+        # Create clear_sky_index variable
+        var_out = dst.createVariable("clear_sky_index", "f4", ("time", "lat", "lon"), zlib=True, complevel=4)
+        var_out.long_name = "Clear-sky index (GHI_total / GHI_clear)"
+        var_out.units = "1"
+
+    # --- Iterate over rows in CSV ---
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="Writing clear-sky index incrementally"):
+        obs_date = row["date"].date()
+        cloud_cover = row["cloud_cover_large"]
+        total_clear_sky = row["total_clear_sky"]
+
+        # Find matching time index
+        time_idx = np.where(times_dates == obs_date)[0]
+        if len(time_idx) == 0:
+            assert cloud_cover <= MIXED_THRESHOLD or cloud_cover >= OVERCAST_THRESHOLD, f"No matching found for mixed sky type (cloud cover = {cloud_cover}) on {obs_date}!"    
+            tqdm.write(f"No matching map found for {obs_date}, skipping...")
+            continue
+
+        idx = int(time_idx[0])
+        ghi_map = ghi_var[idx, :, :]
+
+        # Compute clear-sky index safely
+        clear_sky_index = np.divide(
+            ghi_map, total_clear_sky,
+            out=np.full_like(ghi_map, np.nan),
+            where=np.isfinite(ghi_map)
+        )
+
+        # Optional sanity log
+        min_val, max_val = np.nanmin(clear_sky_index), np.nanmax(clear_sky_index)
+        assert min_val >= 0, f"Negative clear-sky index detected ({min_val})"
+        tqdm.write(f"{obs_date}: range {min_val:.3f}–{max_val:.3f}")
+
+        # Write slice directly to disk
+        var_out[idx, :, :] = clear_sky_index
+
+    # --- Cleanup ---
+    dst.sync()
+    dst.close()
+    if clear_sky_index_outfile_nc is not None: 
+        src.close()
+    print("✅ Clear-sky index written successfully.")
+    
+       
+def clear_sky_index_per_sky_type(single_ghi_maps_filepath, cloud_cover_table_path, aggregated_ghi_maps_outpath):
+    """
+    Preprocess and aggregate GHI maps per sky type (mean clear-sky index).
+    Skips computation if the aggregated NetCDF already exists.
+    """
+    if os.path.exists(aggregated_ghi_maps_outpath):
+        print(f"Aggregated file already exists at {aggregated_ghi_maps_outpath}. Skipping aggregation.")
+        return
+
+    # Load cloud cover metadata
+    df = pd.read_csv(cloud_cover_table_path)
+    df["date"] = pd.to_datetime(df["date"])
+    if "sky_type" not in df.columns:
+        df["sky_type"] = np.where(
+            df["cloud_cover_large"] <= MIXED_THRESHOLD,
+            "clear",
+            np.where(df["cloud_cover_large"] >= OVERCAST_THRESHOLD, "overcast", "mixed")
+        )
+
+    # Open single observation NetCDF
+    src = Dataset(single_ghi_maps_filepath)
+    time_var = src.variables["time"]
+    times = num2date(time_var[:], units=time_var.units, calendar=getattr(time_var, "calendar", "standard"))
+    ghi_data = src.variables["GHI_total"]
+    lat = src.variables["lat"][:]
+    lon = src.variables["lon"][:]
+    shape = (len(lat), len(lon))
+
+    # Running sums and counts
+    accum_sum = {sky: np.zeros(shape, dtype=np.float64) for sky in ["clear", "mixed", "overcast"]}
+    accum_count = {sky: np.zeros(shape, dtype=np.int32) for sky in ["clear", "mixed", "overcast"]}
+
+    # Precompute times as plain dates
+    times_dates = np.array([datetime(t.year, t.month, t.day).date() if not hasattr(t, "date") else t.date() for t in times])
+
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="Aggregating to mean clear sky index..."):
+        obs_date = row["date"].date()
+        sky_type = row["sky_type"]
+        total_clear_sky = row["total_clear_sky"]
+        florida_ghi_sim_horizontal = row["florida_ghi_sim_horizontal"]
+
+        time_idx = np.where(times_dates == obs_date)[0]
+        if len(time_idx) == 0:
+            tqdm.write(f"No matching map found for {obs_date}, skipping...")
+            continue
+
+        # Debugging info 
+        tqdm.write(f"\nDate: {obs_date}, Sky type: {sky_type}, Total clear sky: {total_clear_sky}, Florida ghi: {florida_ghi_sim_horizontal}")
+
+
+        ghi_map = ghi_data[time_idx[0], :, :]
+        clear_sky_index = ghi_map / total_clear_sky
+        
+        # Sanity check
+        min_val, max_val = np.nanmin(clear_sky_index), np.nanmax(clear_sky_index)
+        assert min_val >= 0, f"Negative clear-sky index detected ({min_val})"
+        tqdm.write(f"Clear-sky index range: {min_val:.3f}–{max_val:.3f}")
+
+        valid_mask = np.isfinite(clear_sky_index)
+        accum_sum[sky_type][valid_mask] += clear_sky_index[valid_mask]
+        accum_count[sky_type][valid_mask] += 1
+
+    src.close()
+
+    # Compute mean maps
+    mean_maps = {}
+    for sky in ["clear", "mixed", "overcast"]:
+        valid = accum_count[sky] > 0
+        mean_map = np.full(shape, np.nan, dtype=np.float32)
+        mean_map[valid] = accum_sum[sky][valid] / accum_count[sky][valid]
+        mean_maps[sky] = mean_map
+
+    # Save aggregated NetCDF
+    os.makedirs(os.path.dirname(aggregated_ghi_maps_outpath), exist_ok=True)
+    with xr.Dataset(
+        {f"{sky}_mean_clear_sky_index": (["lat", "lon"], data) for sky, data in mean_maps.items()},
+        coords={"lat": lat, "lon": lon}
+    ) as ds_agg:
+        ds_agg.to_netcdf(aggregated_ghi_maps_outpath)
+        print(f"Saved aggregated mean maps to {aggregated_ghi_maps_outpath}")
+
+
+    
+    
+def aggregate_variable_monthly(
+    in_nc_file,
+    out_nc_file,
+    variable_name,
+    out_var_name=None,
+    out_var_long_name=None,
+    out_var_units=None,
+):
+    """
+    Stream through a variable in a NetCDF file, accumulate monthly sums,
+    and compute mean monthly maps without loading everything into memory.
+
+    Parameters
+    ----------
+    in_nc_file : str
+        Path to input NetCDF file containing the variable to aggregate.
+    out_nc_file : str
+        Path to output NetCDF file for monthly aggregated results.
+    variable_name : str
+        Name of the variable to aggregate (e.g. "shadow_mask", "GHI_total").
+    out_var_name : str, optional
+        Name for the aggregated variable in the output file (default = variable_name + "_monthly_mean").
+    out_var_long_name : str, optional
+        Long descriptive name for the output variable.
+    out_var_units : str, optional
+        Units of the output variable (copied from input if not provided).
+    """
+
+    # -------------------------------------------------------------------------
+    # Open input NetCDF
+    # -------------------------------------------------------------------------
+    with Dataset(in_nc_file, "r") as src:
+        # Time information
+        time_var = src.variables["time"]
+        times = num2date(time_var[:], units=time_var.units, calendar=getattr(time_var, "calendar", "standard"))
+        months = np.array([t.month for t in times])
+
+        # Coordinates
+        lats = src.variables["lat"][:]
+        lons = src.variables["lon"][:]
+        nlat, nlon = len(lats), len(lons)
+
+        # Input variable
+        if variable_name not in src.variables:
+            raise KeyError(f"Variable '{variable_name}' not found in {in_nc_file}.")
+        var = src.variables[variable_name]
+
+        # Get variable units if not provided
+        if out_var_units is None and hasattr(var, "units"):
+            out_var_units = var.units
+
+        # Preallocate accumulators
+        sums = np.zeros((12, nlat, nlon), dtype=np.float64)
+        counts = np.zeros(12, dtype=np.int32)
+
+        # Loop over all time steps
+        for i, m in enumerate(tqdm(months, desc=f"Aggregating {variable_name}", unit="images")):
+            data = var[i, :, :].astype(np.float64)
+            if np.all(np.isnan(data)):
+                continue
+            sums[m - 1] += np.nan_to_num(data)
+            counts[m - 1] += np.isfinite(data).any()  # count image if any valid data
+
+    # -------------------------------------------------------------------------
+    # Compute monthly mean maps
+    # -------------------------------------------------------------------------
+    monthly_means = np.full_like(sums, np.nan, dtype=np.float32)
+    for m in range(12):
+        if counts[m] > 0:
+            monthly_means[m] = sums[m] / counts[m]
+
+    # -------------------------------------------------------------------------
+    # Save output NetCDF
+    # -------------------------------------------------------------------------
+    os.makedirs(os.path.dirname(out_nc_file), exist_ok=True)
+    with Dataset(out_nc_file, "w") as dst:
+        # Dimensions
+        dst.createDimension("month", 12)
+        dst.createDimension("lat", nlat)
+        dst.createDimension("lon", nlon)
+
+        # Month variable
+        nc_month = dst.createVariable("month", "i4", ("month",))
+        nc_month[:] = np.arange(1, 13)
+        nc_month.units = "month number"
+
+        # Coordinates
+        nc_lat = dst.createVariable("lat", "f4", ("lat",))
+        nc_lat[:] = lats
+        nc_lat.units = "degree_north"
+        nc_lon = dst.createVariable("lon", "f4", ("lon",))
+        nc_lon[:] = lons
+        nc_lon.units = "degree_east"
+
+        # Monthly mean
+        out_name = out_var_name or f"{variable_name}_monthly_mean"
+        nc_mean = dst.createVariable(out_name, "f4", ("month", "lat", "lon"), zlib=True)
+        nc_mean[:, :, :] = monthly_means
+        nc_mean.units = out_var_units or "unknown"
+        nc_mean.long_name = out_var_long_name or f"Mean monthly {variable_name}"
+
+        # Monthly counts (number of valid images)
+        nc_count = dst.createVariable(f"{variable_name}_monthly_count", "i4", ("month",))
+        nc_count[:] = counts
+        nc_count.units = "count"
+        nc_count.long_name = f"Number of valid {variable_name} images per month"
+
+    print(f"✅ Monthly aggregation for '{variable_name}' saved to {out_nc_file}")
+
+
+def calculate_monthly_sky_type_probabilities(claas_folder_path="data/raw/claas3_201506-2025-08", outfile="data/processed/claas3_cloud_cover_sky_type_from_cot.csv"):
+    """
+    For each daily CLAAS-3 file at 11 UTC, calculate cloud cover and classify the sky type.
+
+    Parameters
+    ----------
+    claas_folder_path : str
+        Root folder path containing CLAAS-3 data in structure:
+        claas_folder_path/claas3/cpp/{year}/{month}/{day}/CPPin{yyyymmdd}1100*.nc
+    outfile : str
+        Output path for the resulting CSV or pickle file.
+    """
+
+    results = []
+
+    # Iterate over all daily 11:00 UTC CLAAS files
+    pattern = os.path.join(claas_folder_path, "claas3", "cpp", "*", "*", "*", "CPPin????????1100*.nc")
+    files = sorted(glob.glob(pattern))
+
+    if not files:
+        print(f"No files found matching pattern: {pattern}")
+        return
+
+    print(f"Found {len(files)} daily 11 UTC files.")
+
+    for f in tqdm(files, desc="Processing CLAAS files", unit="file"):        
+        try:
+            # Extract date from filename
+            basename = os.path.basename(f)
+            date_str = basename[5:13]  # e.g. CPPin20200504...
+            date = datetime.strptime(date_str, "%Y%m%d")
+
+            with Dataset(f, "r") as ds:
+                # Cloud phase: 0=clear, 1=liquid, 2=ice
+                cph = ds.variables["cot"][:]
+                cph = np.array(cph.filled(np.nan))  # convert masked to normal array with NaNs
+
+            # Count valid pixels (not NaN)
+            valid_mask = np.isfinite(cph)
+            total_pixels = valid_mask.sum()
+            if total_pixels < 425: 
+                tqdm.write("# valid pixels from 425: ", total_pixels)
+
+            # If more than 50% missing, skip day
+            total_possible = cph.size
+            missing_fraction = 1 - (total_pixels / total_possible)
+            if missing_fraction > 0.5:
+                tqdm.write(f"Skipping {f} — {missing_fraction*100:.1f}% missing data")
+                continue
+
+            # Compute cloud cover (only over valid pixels)
+            cloudy_pixels = np.sum(cph[valid_mask] > 0)
+            cloud_cover = (cloudy_pixels / total_pixels) * 100
+
+            cloud_cover = (cloudy_pixels / total_pixels) * 100
+
+            # Classify sky type
+            if cloud_cover <= MIXED_THRESHOLD:
+                sky_type = "clear"
+            elif cloud_cover >= OVERCAST_THRESHOLD:
+                sky_type = "overcast"
+            else:
+                sky_type = "mixed"
+
+            results.append({
+                "year": date.year,
+                "month": date.month,
+                "day": date.day,
+                "cloud_cover": cloud_cover,
+                "sky_type": sky_type
+            })
+
+        except Exception as e:
+            tqdm.write(f"⚠️ Error reading {f}: {e}")
+            continue
+
+    # Convert to DataFrame
+    df = pd.DataFrame(results)
+    print(f"\nProcessed {len(df)} daily records from {df['year'].min()}–{df['year'].max()}.")
+    print(df["sky_type"].value_counts())
+
+    # Save result
+    if outfile.endswith(".csv"):
+        df.to_csv(outfile, index=False)
+    elif outfile.endswith(".pkl"):
+        df.to_pickle(outfile)
+    else:
+        # default to CSV
+        df.to_csv(outfile + ".csv", index=False)
+
+    print(f"✅ Saved daily sky-type data to {outfile}")
+    return df
+    
+def summarize_monthly_cloud_stats(df, cloud_col="cloud_cover", sky_type_col="sky_type"):
+    """
+    Calculate monthly cloud cover mean/std and monthly sky type probabilities.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Must contain at least ['month', cloud_col, sky_type_col].
+    cloud_col : str, optional
+        Column name containing cloud cover percentage values.
+    sky_type_col : str, optional
+        Column name containing sky type category ('clear', 'mixed', 'overcast').
+
+    Returns
+    -------
+    monthly_summary : pandas.DataFrame
+        DataFrame containing per-month cloud cover statistics and sky type probabilities.
+    """
+
+    # Monthly mean and std for cloud cover
+    monthly_cloud_stats = (
+        df.groupby("month")[cloud_col]
+        .agg(["mean", "std"])
+        .rename(columns={"mean": "cloud_cover_mean", "std": "cloud_cover_std"})
+    )
+
+    # Count how many days per sky type per month
+    sky_type_counts = (
+        df.groupby(["month", sky_type_col])
+        .size()
+        .unstack(fill_value=0)
+    )
+
+    # Convert to probabilities per month
+    sky_type_probs = sky_type_counts.div(sky_type_counts.sum(axis=1), axis=0)
+
+    # Combine both summaries
+    monthly_summary = monthly_cloud_stats.join(sky_type_probs)
+    monthly_summary.reset_index(inplace=True)
+
+    # Print summary
+    print("\n📊 Monthly summary:")
+    print(monthly_summary)
+
+    return monthly_summary
+    
+
 if __name__ == "__main__":
     sample_file = "data/raw/claas3_201506-2025-08/claas3/cpp/2020/05/04/CPPin20200504110000405SVMSG01MD.nc"
     aux_file = "data/raw/claas3_201506-2025-08/claas3/CM_SAF_CLAAS3_L2_AUX.nc"
@@ -582,21 +1007,86 @@ if __name__ == "__main__":
     clara_csv = "data/raw/CWP_2015-2025.csv"
     claas_folder_cpp = "data/raw/claas3_201506-2025-08/claas3/cpp"
     claas_folder_ctx = "data/raw/claas3_201506-2025-08/claas3/ctx"
-    s2_csv = "data/processed/s2_cloud_cover_table_small_and_large_with_cot_with_cth.csv"
+    s2_csv = "data/processed/s2_cloud_cover_table_small_and_large_with_cloud_props.csv"
+    sim_vs_obs_path = "data/processed/s2_cloud_cover_with_stations_with_pixel_sim.csv"
+    single_shadow_maps_nc = "data/processed/cloud_shadow_thresh40.nc"
+    monthly_shadow_maps_nc = "data/processed/cloud_shadow_thresh40_monthly.nc"
+    single_ghi_maps = "data/processed/simulated_ghi.nc"
+    monthly_ghi_maps = "data/processed/simulated_irradiance_monthly.nc"
+    monthly_clear_sky_index_maps = "data/processed/simulated_clear_sky_index_monthly_mixed_sky.nc"
+    aggregated_sky_type_clear_sky_index_outpath = "data/processed/clear_sky_index_sky_type_all_time_11UTC.nc"
+    mixed_sky_ghi ="data/processed/simulated_ghi_without_terrain_only_mixed.nc"
+    
+    #convert_ghi_to_clear_sky_index(irradiance_infile_nc=mixed_sky_ghi, cloud_cover_table_path=sim_vs_obs_path)
+    
+    """aggregate_variable_monthly(
+        in_nc_file=mixed_sky_ghi,
+        out_nc_file=monthly_clear_sky_index_maps,
+        variable_name="clear_sky_index",
+        out_var_name="clear_sky_index",
+        out_var_long_name="Mean clear sky index aggregated monthly (UTC=11)",
+        out_var_units="0-1",
+    ) 
+    
+    clear_sky_index_per_sky_type(single_ghi_maps_filepath=single_ghi_maps, cloud_cover_table_path=sim_vs_obs_path, 
+                                 aggregated_ghi_maps_outpath=aggregated_sky_type_clear_sky_index_outpath)
+     """
        
-    add_claas3_variable_to_cloud_cover_table(claas_folder_cpp, aux_file, s2_csv, 
-                                             variable_name="cph", file_prefix="CPPin")
+    #add_claas3_variable_to_cloud_cover_table(claas_folder_cpp, aux_file, s2_csv, 
+    #                                         variable_name="cgt", file_prefix="CPPin")
     
     #df_albedo = extract_clara_albedo(data_folder, clara_csv, target_lon=5.33)
     #df_albedo = pd.read_csv(clara_csv, parse_dates=["date"])
     #print(df_albedo[["black_sky_albedo_median", "black_sky_albedo_all_median"]].describe())
-    s5p_csv = "data/processed/s5p_monthly_mean_surface_albedo.csv"
-    outpath = "output/monthly_mean_albedo_comparison_incl_snow.png"
+    #s5p_csv = "data/processed/s5p_monthly_mean_surface_albedo.csv"
+    #outpath = "output/monthly_mean_albedo_comparison_incl_snow.png"
     
-    #inspect_file(sample_file, "cph")
+    #df = calculate_monthly_sky_type_probabilities()
+    df = pd.read_csv("data/processed/claas3_cloud_cover_sky_type_from_cot.csv")
+    claas_monthly_summary = summarize_monthly_cloud_stats(df)
+    
+    df_sim = pd.read_csv(sim_vs_obs_path)
+
+    # Derive sky_type from cloud_cover_large (assuming in %)
+    def classify_sky_type(cc):
+        if cc <= MIXED_THRESHOLD:
+            return "clear"
+        elif cc >= OVERCAST_THRESHOLD:
+            return "overcast"
+        else:
+            return "mixed"
+
+    df_sim["sky_type"] = df_sim["cloud_cover_large"].apply(classify_sky_type)
+
+    # Add month (from date column if available)
+    if "date" in df_sim.columns:
+        df_sim["month"] = pd.to_datetime(df_sim["date"]).dt.month
+    elif {"year", "month", "day"}.issubset(df_sim.columns):
+        df_sim["month"] = pd.to_datetime(df_sim[["year", "month", "day"]]).dt.month
+    else:
+        raise ValueError("No date information found in dataframe to derive 'month'.")
+
+    # Select only needed columns
+    df_sim_subset = df_sim[["month", "cloud_cover_large", "sky_type"]].copy()
+
+    # Run summary
+    sim_monthly_summary = summarize_monthly_cloud_stats(
+        df_sim_subset, 
+        cloud_col="cloud_cover_large",
+        sky_type_col="sky_type"
+    )
+    # TODO: next steps: Use sentinel-2 data (more accurate for clouds at high latitudes). 
+    # - get number of observations per month
+    # - Plot cloud type probability in bars for each month and the number of available data in separate y-axis
+    # - Get the sd for cloud type probability for each cloud type by calculating it for each year 
+    # - Get cloud type/cloud cover distribution for each month and draw from there for annual simulation
+    
+    #inspect_file(sample_file, "cot")
     #plot_claas3_file(aux_file, sample_file, "cth")
     #plot_monthly_mean_albedos(clara_csv=clara_csv, s5p_csv=s5p_csv, outpath=outpath)
     #crop_to_roi("data/raw/claas-3_test/*.nc", "data/raw/claas-3_test_small_roi.nc", aux_filepath = aux_file)
     #cfc_diurnal_cycle_monthly("data/comet2_roi_month.nc")
     #visualize_peak_hour("data/comet2_roi_month.nc")
     #print(roi)
+    
+    

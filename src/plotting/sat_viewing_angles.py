@@ -1,6 +1,10 @@
 import matplotlib.pyplot as plt
 import pandas as pd 
 import numpy as np
+import mgrs
+import shapely.geometry as geom
+import cartopy.crs as ccrs
+from src.plotting import STATIONS
 
 cloud_cover_table_filepath = "data/processed/s2_cloud_cover_table_small_and_large_with_cloud_props.csv"
 
@@ -127,9 +131,53 @@ def scatter_viewing_angles(cloud_cover_filepath, outpath=None):
         outpath = "output/scatter_sat_zenith_azimuth.png"
     plt.savefig(outpath)
     print(f"Scatter plot saved to {outpath}.")
+    
+
+def plot_mgrs_tile(tile="32VKM"):
+    # Initialize converter
+    m = mgrs.MGRS()
+
+    # Get the bounding box of the tile (in lat/lon)
+    # Note: MGRS strings usually need full precision (e.g. 32VKM0000000000 for lower-left)
+    ll = m.toLatLon(tile + "0000000000")  # lower-left corner
+    ur = m.toLatLon(tile + "9999999999")  # upper-right corner
+
+    # Build polygon
+    bbox = geom.Polygon([
+        (ll[1], ll[0]),   # lower-left (lon, lat)
+        (ur[1], ll[0]),   # lower-right
+        (ur[1], ur[0]),   # upper-right
+        (ll[1], ur[0]),   # upper-left
+        (ll[1], ll[0])    # back to start
+    ])
+
+    # Plot on map
+    fig, ax = plt.subplots(figsize=(6,6), subplot_kw={'projection': ccrs.PlateCarree()})
+    ax.set_extent([ll[1]-1, ur[1]+1, ll[0]-1, ur[0]+1])
+
+    ax.coastlines(resolution="10m")
+    ax.gridlines(draw_labels=True)
+
+    # Plot tile
+    x, y = bbox.exterior.xy
+    ax.plot(x, y, color="red", linewidth=2, label=f"MGRS tile {tile}")
+
+    # Plot landmarks
+    for name, (lat, lon) in STATIONS.items():
+        ax.scatter(lon, lat, color="blue", s=50, marker="o", transform=ccrs.PlateCarree(), label=name)
+        ax.text(lon + 0.02, lat + 0.02, name, fontsize=10, transform=ccrs.PlateCarree())
+
+
+    plt.title(f"MGRS tile {tile}")
+    plt.show()
+ 
 
 if __name__ == "__main__": 
     #mean_sat_angles_distribution(cloud_cover_table_filepath)
     #mean_sat_angles_per_doy(cloud_cover_table_filepath, start_date="2024-01-01", end_date="2025-12-31")
     #scatter_viewing_angles(cloud_cover_table_filepath)
-    satellite_viewing_phases(cloud_cover_table_filepath)
+    viewing_angles_table_path = "data/processed/S2_viewing_angles_full_table.csv"
+    viewing_angles = pd.read_csv(viewing_angles_table_path)
+    #print(viewing_angles[["MEAN_ZENITH", "MEAN_AZIMUTH", "STD_ZENITH", "STD_AZIMUTH"]].describe())
+    #plot_mgrs_tile("32VLM")
+    #satellite_viewing_phases(cloud_cover_table_filepath)
