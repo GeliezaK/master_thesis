@@ -996,6 +996,19 @@ def summarize_monthly_cloud_stats(df, cloud_col="cloud_cover", sky_type_col="sky
     # Print summary
     print("\n📊 Monthly summary:")
     print(monthly_summary)
+    
+    months = df["month"].unique()
+    fig, axs = plt.subplots(4,3, figsize=(8, 12), facecolor='w', edgecolor='k')
+    axs = axs.ravel()
+    for i, month in enumerate(months): 
+        df_month = df[df["month"] == month]
+        df_month = df_month[["cloud_cover_large"]]
+        axs[i].hist(df_month, bins=50, density=1)
+        axs[i].set_xlabel("cloud cover")
+        axs[i].set_ylabel("frequency")
+    outpath="output/monthly_cloud_cover_hist.png"
+    plt.savefig(outpath)
+    print(f"Histogram of cloud cover saved to {outpath}.")
 
     return monthly_summary
     
@@ -1043,7 +1056,7 @@ if __name__ == "__main__":
     
     #df = calculate_monthly_sky_type_probabilities()
     df = pd.read_csv("data/processed/claas3_cloud_cover_sky_type_from_cot.csv")
-    claas_monthly_summary = summarize_monthly_cloud_stats(df)
+    #claas_monthly_summary = summarize_monthly_cloud_stats(df)
     
     df_sim = pd.read_csv(sim_vs_obs_path)
 

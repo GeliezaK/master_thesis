@@ -4,10 +4,26 @@ import pandas as pd
 import numpy as np
 import imageio
 import xarray as xr
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from src.model import BBOX
-from src.plotting.high_res_maps import plot_single_band, plot_monthly_results
-from src.model.cloud_shadow import get_cloud_shadow_displacement, get_solar_angle, project_cloud_shadow, read_shadow_roi
+from src.model import BBOX, COARSE_RESOLUTIONS
+from src.plotting.high_res_maps import plot_single_band, plot_band_with_extent
+from src.model.cloud_shadow import get_cloud_shadow_displacement, get_solar_angle, read_shadow_roi
+
+def get_shadow_from_ind(shadow_nc_file, ind): 
+    """Read shadow nc file, retrieve shadow map from index and return shadow map and timestamp"""
+    ds = xr.open_dataset(shadow_nc_file)
+    shadow_mask = ds["shadow_mask"].isel(time=ind).values
+    lat = ds["lat"].values
+    lon = ds["lon"].values
+    timestamp = ds["time"].isel(time=ind).values
+    ds.close()
+
+    # Convert timestamp
+    timestamp = datetime.fromtimestamp(timestamp.astype("datetime64[s]").astype(int), tz=timezone.utc)
+    
+    return shadow_mask, timestamp, lat, lon
+
 
 def analyze_cloud_shadow_displacement(cloud_cover_table_path, cth): 
     """Get cloud shadow displacement in x and y direction for each observation in cloud_cover table.
@@ -119,11 +135,11 @@ def create_shadow_gif(s2_cloud_mask_sample):
         solar_zenith, solar_azimuth = get_solar_angle(timestamp)
         dx_m, dy_m = get_cloud_shadow_displacement(solar_zenith, solar_azimuth, cbh_m, sat_zenith, sat_azimuth)
         shadow_new, shadow_bbox = read_shadow_roi(s2_cloud_mask_sample, dx_m, dy_m)
-        shadow_old, _ = project_cloud_shadow(s2_cloud_mask_sample, dy_m/10, dx_m/10, BBOX)
+        #shadow_old, _ = project_cloud_shadow(s2_cloud_mask_sample, dy_m/10, dx_m/10, BBOX)
 
         # Plot side-by-side comparison
         frame_path = f"output/gifs/frame_{timestamp_str}.png"
-        plot_shadow_comparison(shadow_new, shadow_old, timestamp_str, frame_path)
+        plot_shadow_comparison(shadow_new, shadow_new, timestamp_str, frame_path)
         images.append(imageio.imread(frame_path))
         timestamp += timedelta(hours=1)
 
@@ -147,29 +163,25 @@ def plot_shadow_comparison(shadow_new, shadow_old, timestamp_str, output_path):
     plt.close(fig)
 
 
-def plot_cloud_shadow_for_timestep(shadow_nc_file, ind=0, outdir="output"):
+def plot_cloud_shadow_for_timestep(shadow_nc_file, ind=0):
     """
     Plot GHI_total for a specific timestep from the NetCDF file.
     """
-    # Load dataset
-    ds = xr.open_dataset(shadow_nc_file)
-    shadow_mask = ds["shadow_mask"].isel(time=ind).values
-    timestamp = ds["time"].isel(time=ind).values
-    lat = ds["lat"].values
-    lon = ds["lon"].values
-    ds.close()
-
-    # Convert timestamp
-    timestamp = datetime.fromtimestamp(timestamp.astype("datetime64[s]").astype(int), tz=timezone.utc)
+    shadow_mask, timestamp, _, _ = get_shadow_from_ind(shadow_nc_file, ind)
     ts_str = timestamp.strftime("%Y-%m-%d_%H:%M:%S")
 
     # Define colormap and levels
-    values = [0,1]
     colors = ["white", "darkgray"]
+    cmap = mcolors.ListedColormap(colors)
+    norm = mcolors.BoundaryNorm(boundaries=[-0.5, 0.5, 1.5], ncolors=len(colors))
 
-    plot_single_band(shadow_mask, f"output/shadow_mask_{ts_str}.png", 
+    filestem = Path(shadow_nc_file).stem
+
+    plot_single_band(shadow_mask, f"output/{filestem}_{ts_str}.png", 
             f"Cloud shadow for {ts_str}",
-            "Cloud shadow", values, colors)
+            "Cloud shadow", cmap=cmap, norm=norm)
+    
+    
 
 def plot_shadow_frequency_all_obs(monthly_shadow_frequency_filepath):
     """
@@ -218,11 +230,10 @@ def plot_shadow_frequency_all_obs(monthly_shadow_frequency_filepath):
 if __name__ == "__main__": 
     s2_cloud_mask_sample = f"data/raw/S2_cloud_mask_large/S2_cloud_mask_large_2017-08-27_10-56-51-2017-08-27_10-56-51.tif"
     cloud_cover_table_filepath = "data/processed/s2_cloud_cover_table_small_and_large_with_cloud_props.csv"
-    cloud_shadow_nc = "data/processed/cloud_shadow_thresh40.nc"
+    cloud_shadow_nc_res10 = "data/processed/cloud_shadow_thresh40.nc"
     monthly_cloud_shadow_nc = "data/processed/cloud_shadow_thresh40_monthly.nc"
     # analyze_cloud_shadow_displacement(cloud_cover_table_filepath, 2000)
     #create_shadow_gif(s2_cloud_mask_sample)
-    #plot_cloud_shadow_for_timestep(cloud_shadow_nc, ind=0)
     """ plot_monthly_results(monthly_cloud_shadow_nc_test, var_name="shadow_frequency", 
                          outpath="output/monthly_cloud_shadow_freq_thresh_40.png",
                          title="Monthly Cloud Shadow Frequencies (2015-2025)", 
@@ -231,5 +242,31 @@ if __name__ == "__main__":
                          value_ranges=[0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9], 
                          value_colors=["yellow", "limegreen", "green", "teal", "dodgerblue", "mediumblue", 
                                        "darkblue"]) """
-    plot_shadow_frequency_all_obs(monthly_shadow_frequency_filepath=monthly_cloud_shadow_nc)
+    #plot_shadow_frequency_all_obs(monthly_shadow_frequency_filepath=monthly_cloud_shadow_nc)
+    print(BBOX)
+    ind = 148
+    shadow_nc_file = f"data/processed/cloud_shadow_thresh40.nc"
+    shadow_mask, timestamp, lat, lon = get_shadow_from_ind(shadow_nc_file, ind=ind)
+    filestem = Path(shadow_nc_file).stem
+    ts_str = timestamp.strftime("%Y-%m-%d")
+    plot_band_with_extent(
+            shadow_mask,
+            BBOX["west"], BBOX["east"], BBOX["south"], BBOX["north"],
+            f"output/cloud_shadow_10m_{ts_str}")
+    
+    for res in COARSE_RESOLUTIONS: 
+        shadow_nc_file = f"data/processed/cloud_shadow_{res}m.nc"
+        shadow_mask, timestamp, lat, lon = get_shadow_from_ind(shadow_nc_file, ind=ind)
+
+        filestem = Path(shadow_nc_file).stem
+        ts_str = timestamp.strftime("%Y-%m-%d")
+
+        plot_band_with_extent(
+            shadow_mask,
+            BBOX["west"], BBOX["east"], BBOX["south"], BBOX["north"],
+            f"output/{filestem}_{ts_str}"
+        )
+
+    
+    
     

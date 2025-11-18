@@ -11,7 +11,8 @@ import xarray as xr
 import os
 import numpy as np
 import pandas as pd
-from src.model import MIXED_THRESHOLD, OVERCAST_THRESHOLD, FLESLAND_LAT, FLESLAND_LON, FLORIDA_LAT, FLORIDA_LON
+from src.model import MIXED_THRESHOLD, OVERCAST_THRESHOLD, COARSE_RESOLUTIONS
+from src.model import FLESLAND_LAT, FLESLAND_LON, FLORIDA_LAT, FLORIDA_LON
     
 def load_image(filepath): 
     with rasterio.open(filepath) as src:
@@ -327,6 +328,9 @@ def total_ghi_from_sat_imgs(cloud_shadow_path, cloud_cover_filepath, LUT_filepat
         shape_lon = shape_cloud_shadow_lon
         lat = cloud_shadow_lat
         lon = cloud_shadow_lon
+        
+    if verbose: 
+        print(f"Lat: {shape_lat}, lon:{shape_lon}")
         
     if not os.path.exists(out_nc_file):
         os.makedirs(os.path.dirname(out_nc_file), exist_ok=True)
@@ -669,10 +673,13 @@ if __name__ == "__main__":
     cloud_shadow_filepath = "data/processed/cloud_shadow_thresh40.nc"
     cloud_props = pd.read_csv(cloud_cover_table_filepath) 
     outpath_new_florida_flesland_sim = "data/processed/s2_cloud_cover_with_stations_with_pixel_sim.csv"
-        
-    total_ghi_from_sat_imgs(cloud_shadow_filepath, cloud_cover_table_filepath, lut_filepath,
-                            sw_cor_path=None, out_nc_file="data/processed/simulated_ghi_without_terrain_only_mixed.nc",
-                            mixed_threshold=1, overcast_threshold=99, verbose=False)
+    
+    for res in COARSE_RESOLUTIONS:
+        print(f"Resolution: {res}m.")
+        coarse_cloud_shadow_filepath = f"data/processed/cloud_shadow_{res}m.nc"
+        total_ghi_from_sat_imgs(coarse_cloud_shadow_filepath, cloud_cover_table_filepath, lut_filepath,
+                                sw_cor_path=None, out_nc_file=f"data/processed/simulated_ghi_without_terrain_only_mixed_{res}m.nc",
+                                mixed_threshold=1, overcast_threshold=99, verbose=False)
 
     """ df = simulate_stations_pixels_corrected(cloud_cover_filepath=cloud_cover_table_filepath,
                                        lut_filepath=lut_filepath, 

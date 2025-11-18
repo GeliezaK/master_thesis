@@ -15,7 +15,7 @@ from time import time
 import matplotlib.pyplot as plt
 from src.plotting.high_res_maps import plot_single_band
 from src.model.surface_GHI_model import get_cloud_properties
-from src.model import CENTER_LAT, CENTER_LON, BBOX
+from src.model import CENTER_LAT, CENTER_LON, BBOX, MIXED_THRESHOLD, OVERCAST_THRESHOLD, COARSE_RESOLUTIONS
 
 R_EARTH = 6371000
 
@@ -94,6 +94,7 @@ def get_cloud_shadow_displacement(solar_zenith, solar_azimuth,
 
     return dx_total, dy_total
 
+
 def meters_to_latlon_offset(dx_m, dy_m, lat_center):
     """
     Convert displacement in meters to lat/lon offset in degrees.
@@ -133,45 +134,8 @@ def read_shadow_roi(cloud_mask_filepath, dx_m, dy_m):
 
     return shadow_mask, shadow_bbox
 
-
-
-
-def project_cloud_shadow(filepath, dy_pix, dx_pix, bbox):
-    """
-    Shift cloud mask from a GeoTIFF and extract ROI defined by bounding box.
-    """
-    # Load image + profile
-    with rasterio.open(filepath) as src:
-        cloud_mask = src.read(1).astype(np.uint8)
-        transform = src.transform
-
-    # Shift cloud mask
-    shadow_mask = shift(cloud_mask,
-                        shift=(-dy_pix, -dx_pix),
-                        mode="constant", order=0, cval=0)
-    shadow_mask = (shadow_mask > 0).astype(np.uint8)
-
-    # Convert bbox to raster window
-    window = from_bounds(bbox["west"], bbox["south"],
-                         bbox["east"], bbox["north"],
-                         transform=transform)
-
-    # Round values
-    row_off = math.floor(window.row_off)
-    col_off = math.floor(window.col_off)
-    height = math.ceil(window.height)
-    width = math.ceil(window.width)
-
-    roi_mask = shadow_mask[
-        row_off:row_off + height,
-        col_off:col_off + width
-    ]
-
-    return roi_mask, transform
     
-    
-def save_shadow_masks_to_nc(cloud_props_filepath, sat_cloud_mask_dir, out_nc_file,
-                            mixed_threshold=1, overcast_threshold=99, verbose=False):
+def save_shadow_masks_to_nc(cloud_props_filepath, sat_cloud_mask_dir, out_nc_file, verbose=False):
     """
     Loop over selected rows in cloud_props, compute cloud shadow displacement,
     extract shadow masks using read_shadow_roi, and save to NetCDF incrementally.
@@ -191,8 +155,8 @@ def save_shadow_masks_to_nc(cloud_props_filepath, sat_cloud_mask_dir, out_nc_fil
     
 
     cloud_props = cloud_props[
-        (cloud_props["cloud_cover_large"] > mixed_threshold) &
-        (cloud_props["cloud_cover_large"] < overcast_threshold)
+        (cloud_props["cloud_cover_large"] > MIXED_THRESHOLD) &
+        (cloud_props["cloud_cover_large"] < OVERCAST_THRESHOLD)
     ].reset_index(drop=True)
     
     median_sat_zen = cloud_props["MEAN_ZENITH"].median()
@@ -205,60 +169,24 @@ def save_shadow_masks_to_nc(cloud_props_filepath, sat_cloud_mask_dir, out_nc_fil
 
     if verbose:
         print(f"Filtered rows: {len(cloud_props)} "
-              f"(thresholds {mixed_threshold}–{overcast_threshold})")
-
-    # -------------------------------------------------------------------------
-    # Derive fixed 10m grid from BBOX
-    # -------------------------------------------------------------------------
-
-    lat = np.linspace(BBOX["south"], BBOX["north"], 2498)
-    lon = np.linspace(BBOX["west"], BBOX["east"], 5060)
-
-    # -------------------------------------------------------------------------
-    # Create NetCDF file if it does not exist
-    # -------------------------------------------------------------------------
-    if not os.path.exists(out_nc_file):
-        os.makedirs(os.path.dirname(out_nc_file), exist_ok=True)
-        ncfile = Dataset(out_nc_file, mode="w")
-        ncfile.createDimension("time", size=None)
-        ncfile.createDimension("lat", size=len(lat))
-        ncfile.createDimension("lon", size=len(lon))
-
-        # Time variable
-        nc_time = ncfile.createVariable("time", "f8", ("time",))
-        nc_time.units = "hours since 2015-01-01 00:00:00"
-        nc_time.calendar = "gregorian"
-
-        # Lat/Lon
-        nc_lat = ncfile.createVariable("lat", "f4", ("lat",))
-        nc_lat[:] = lat
-        nc_lat.units = "degree"
-        nc_lon = ncfile.createVariable("lon", "f4", ("lon",))
-        nc_lon[:] = lon
-        nc_lon.units = "degree"
-
-        # Shadow mask variable
-        nc_shadow = ncfile.createVariable("shadow_mask", "i1",
-                                          ("time", "lat", "lon"),
-                                          zlib=True)
-        nc_shadow.units = "1"
-        nc_shadow.long_name = "Cloud shadow mask (0=clear, 1=shadow)"
-
-        ncfile.close()
+              f"(thresholds {MIXED_THRESHOLD}–{OVERCAST_THRESHOLD})")
 
     # -------------------------------------------------------------------------
     # Open NetCDF in append mode and get existing times
     # -------------------------------------------------------------------------
-    ncfile = Dataset(out_nc_file, mode="a")
-    existing_times = ncfile.variables["time"][:]
-    existing_datetimes = pd.to_datetime(existing_times,
-                                        origin=pd.Timestamp("2015-01-01 00:00:00"),
-                                        unit="h")
-    existing_dates = existing_datetimes.date
-    ncfile.close()
+    if os.path.exists(out_nc_file):
+        ncfile = Dataset(out_nc_file, mode="a")
+        existing_times = ncfile.variables["time"][:]
+        existing_datetimes = pd.to_datetime(existing_times,
+                                            origin=pd.Timestamp("2015-01-01 00:00:00"),
+                                            unit="h")
+        existing_dates = existing_datetimes.date
+        ncfile.close()
+    else :
+        existing_dates = []
 
     if verbose:
-        print(f"Number of shadow masks already in {out_nc_file}: {len(existing_times)}")
+        print(f"Number of shadow masks already in {out_nc_file}: {len(existing_dates)}")
 
     # -------------------------------------------------------------------------
     # Iterate rows and compute shadow masks
@@ -294,11 +222,11 @@ def save_shadow_masks_to_nc(cloud_props_filepath, sat_cloud_mask_dir, out_nc_fil
 
 
         # Assume CBH = CTH - 1000m - technically not needed because CTH is sufficient
-        COT, CTH, CPH = get_cloud_properties(row, monthly_medians, month, verbose=verbose)
+        COT, CTH, CPH = get_cloud_properties(row, monthly_medians, month)
         cth_m = CTH * 1000
         cbh_m = cth_m - 1000.0
         
-        if verbose: 
+        if verbose:
             tqdm.write(f"Cloud base height: {cbh_m}, top height: {cth_m}")
 
         dx_m, dy_m = get_cloud_shadow_displacement(
@@ -312,6 +240,43 @@ def save_shadow_masks_to_nc(cloud_props_filepath, sat_cloud_mask_dir, out_nc_fil
         
         if verbose: 
             tqdm.write(f"Shadow mask shape: {shadow_mask.shape}")
+            
+        # -------------------------------------------------------------------------
+        # Create NetCDF file if it does not exist - only first iteration
+        # -------------------------------------------------------------------------
+        if not os.path.exists(out_nc_file):
+            os.makedirs(os.path.dirname(out_nc_file), exist_ok=True)
+            nlat, nlon = shadow_mask.shape
+            tqdm.write(f"nlat, nlon: {(nlat, nlon)}")
+            lon = np.linspace(BBOX["west"], BBOX["east"], nlon)
+            lat = np.linspace(BBOX["south"], BBOX["north"], nlat)
+            
+            ncfile = Dataset(out_nc_file, mode="w")
+            ncfile.createDimension("time", size=None)
+            ncfile.createDimension("lat", size=nlat)
+            ncfile.createDimension("lon", size=nlon)
+
+            # Time variable
+            nc_time = ncfile.createVariable("time", "f8", ("time",))
+            nc_time.units = "hours since 2015-01-01 00:00:00"
+            nc_time.calendar = "gregorian"
+
+            # Lat/Lon
+            nc_lat = ncfile.createVariable("lat", "f4", ("lat",))
+            nc_lat[:] = lat
+            nc_lat.units = "degree"
+            nc_lon = ncfile.createVariable("lon", "f4", ("lon",))
+            nc_lon[:] = lon
+            nc_lon.units = "degree"
+
+            # Shadow mask variable
+            nc_shadow = ncfile.createVariable("shadow_mask", "i1",
+                                            ("time", "lat", "lon"),
+                                            zlib=True)
+            nc_shadow.units = "1"
+            nc_shadow.long_name = "Cloud shadow mask (0=clear, 1=shadow)"
+
+            ncfile.close()
 
         # Save to NetCDF
         ncfile = Dataset(out_nc_file, mode="a")
@@ -335,4 +300,10 @@ if __name__=="__main__":
     monthly_shadow_maps_nc = "data/processed/cloud_shadow_thresh40_monthly.nc"
     #save_shadow_masks_to_nc(cloud_cover_table_filepath, s2_cloud_mask_folderpath,
     #                        single_shadow_maps_nc)
+    
+    # Now for upscaled cloud mask images
+    for res in COARSE_RESOLUTIONS: 
+        print(f"Resolution: {res}m")
+        save_shadow_masks_to_nc(cloud_cover_table_filepath, f"data/processed/S2_cloud_mask_{res}m",
+                            f"data/processed/cloud_shadow_{res}m.nc", verbose=False)
     

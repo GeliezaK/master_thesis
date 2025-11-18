@@ -9,7 +9,7 @@ from pvlib.location import Location
 from scipy.stats import linregress
 from sklearn.metrics import r2_score
 from sklearn.linear_model import TheilSenRegressor
-from src.model import CENTER_LAT, CENTER_LON, MIXED_THRESHOLD, OVERCAST_THRESHOLD
+from src.model import CENTER_LAT, CENTER_LON, MIXED_THRESHOLD, OVERCAST_THRESHOLD, COARSE_RESOLUTIONS
 from src.model.surface_GHI_model import get_closest_lut_entry
 from src.plotting import SIMULATION_COLOR, SIMULATION_LS, SIMULATION_M, OBSERVATION_COLOR, OBSERVATION_LS, OBSERVATION_M
 from src.plotting import SKY_TYPE_COLORS, STATION_COLORS, set_paper_style
@@ -607,13 +607,6 @@ def print_sky_type_percentages(sim_vs_obs):
     print(summary)
     print(f"\nTotal observations: {total_obs}")
     
-    
-import numpy as np
-import matplotlib.pyplot as plt
-from src.plotting import (
-    SIMULATION_COLOR, SIMULATION_LS, SIMULATION_M,
-    OBSERVATION_COLOR, OBSERVATION_LS, OBSERVATION_M
-)
 
 def plot_obs_vs_sim_distributions(
     florida_obs, flesland_obs,
@@ -797,7 +790,7 @@ def main():
     sim_vs_obs = pd.read_csv(sim_vs_obs_path)
     sim_vs_obs["flesland_ghi_sim_ECAD"] = sim_ECAD["Flesland_ghi_sim_ECAD"]
     sim_vs_obs["florida_ghi_sim_ECAD"] = sim_ECAD["Florida_ghi_sim_ECAD"]
-    required_cols = [
+    required_cols = ["date",
         "cloud_cover_large_thresh50", "cloud_cover_small_thresh50",
         "cloud_cover_large", "cloud_cover_small", 
         "cth_median_large", "cot_median_large", "cph_median_large",
@@ -806,7 +799,11 @@ def main():
         "MEAN_ZENITH", "MEAN_AZIMUTH", "month",
         "florida_ghi_sim_ECAD", "flesland_ghi_sim_ECAD", "total_clear_sky",
         "florida_ghi_sim_horizontal", "flesland_ghi_sim_horizontal", "florida_cloud_shadow", 
-        "flesland_cloud_shadow"
+        "flesland_cloud_shadow", "Florida_ghi_sim_ECAD_100m", "Flesland_ghi_sim_ECAD_100m", 
+        "Florida_ghi_sim_ECAD_500m", "Flesland_ghi_sim_ECAD_500m",
+        "Florida_ghi_sim_ECAD_1000m", "Flesland_ghi_sim_ECAD_1000m",
+        "Florida_ghi_sim_ECAD_5000m", "Flesland_ghi_sim_ECAD_5000m",
+        "Florida_ghi_sim_ECAD_25000m", "Flesland_ghi_sim_ECAD_25000m"
     ]
 
     assert all(col in sim_vs_obs.columns for col in required_cols), \
@@ -830,15 +827,8 @@ def main():
     
     # Make new subset 
     # Copy subset without modifying the original
-    sim_vs_obs_sub = sim_vs_obs[[
-        "date", "sky_type", "cloud_cover_large", 
-        "florida_ghi_sim_horizontal", "flesland_ghi_sim_horizontal", 
-        "Flesland_ghi_1M", "Florida_ghi_1M", 
-        "flesland_cloud_shadow", "florida_cloud_shadow", 
-        "MEAN_ZENITH", "MEAN_AZIMUTH", "month", "total_clear_sky",
-        "cth_median_small", "cot_median_small", "cph_median_small",
-        "flesland_ghi_sim_ECAD", "florida_ghi_sim_ECAD"
-    ]].copy()
+    subset_cols = ["sky_type"] + required_cols
+    sim_vs_obs_sub = sim_vs_obs[subset_cols].copy()
     
     # Print basic info and statistics
     #print_basic_info(sim_vs_obs_sub)
@@ -863,7 +853,17 @@ def main():
         "flesland_ghi_sim_horizontal",
         "florida_ghi_sim_horizontal",
         "Flesland_ghi_1M",
-        "Florida_ghi_1M"
+        "Florida_ghi_1M",
+        "Florida_ghi_sim_ECAD_100m",
+        "Flesland_ghi_sim_ECAD_100m",
+        "Florida_ghi_sim_ECAD_500m",
+        "Flesland_ghi_sim_ECAD_500m",
+        "Florida_ghi_sim_ECAD_1000m",
+        "Flesland_ghi_sim_ECAD_1000m",
+        "Florida_ghi_sim_ECAD_5000m",
+        "Flesland_ghi_sim_ECAD_5000m",
+        "Florida_ghi_sim_ECAD_25000m",
+        "Flesland_ghi_sim_ECAD_25000m"
     ]
 
     # Assert no exact zeros in the data
@@ -900,15 +900,15 @@ def main():
         sim_data = {}
 
         # Collect valid data per station (drop rows where sim or obs is NaN)
-        for station in stations:
-            obs_col = f"{station}_{obs_suffix}"
-            sim_col = f"{station.lower()}_{sim_suffix}"
+        for station_name in stations:
+            obs_col = f"{station_name}_{obs_suffix}"
+            sim_col = f"{station_name.lower()}_{sim_suffix}"
 
             valid = sim_vs_obs_sub[[obs_col, sim_col]].dropna()
-            obs_data[station] = valid[obs_col]
-            sim_data[station] = valid[sim_col]
+            obs_data[station_name] = valid[obs_col]
+            sim_data[station_name] = valid[sim_col]
 
-            print(f"✅ {station}: using {len(valid)} valid pairs after NaN removal for {obs_col} vs {sim_col}")
+            print(f"✅ {station_name}: using {len(valid)} valid pairs after NaN removal for {obs_col} vs {sim_col}")
 
         # -------------------- Plot distributions --------------------
         outpath = (
@@ -944,7 +944,7 @@ def main():
         )
         print("\n" + "-"*75 + "\n")
         
-    # --------------------------- Error metrics --------------------------
+    # --------------------------- Explore error correlations --------------------------
     # Compute error: sim - obs
     # Compute model error (simulation minus observation)
     sim_vs_obs_sub["error_flesland"] = (sim_vs_obs_sub["Flesland_ghi_1M_log"] - sim_vs_obs_sub["flesland_ghi_sim_horizontal_log"])
@@ -967,53 +967,65 @@ def main():
         print(f"{var:25s} | Flesland: {corr_fles:6.3f} | Florida: {corr_flor:6.3f}")
 
     # Plot error vs cloud cover and cloud shadow
-    for station in stations:
-        sim_col = f"{station.lower()}_ghi_sim_horizontal"
-        obs_col = f"{station}_ghi_1M"
-        error_col = f"{station.lower()}_error"
+    coarse_sims = [f"_ghi_sim_ECAD_{res}m" for res in COARSE_RESOLUTIONS]
+    coarse_log_sims = [sim_scen + "_log" for sim_scen in coarse_sims]
+    
+    for sim_scen in coarse_sims: 
+        print(f"\n======== {sim_scen} ========")
+        for station_name in stations:
+            sim_col = station_name + sim_scen
+            obs_col = f"{station_name}_ghi_1M"
+            error_col = f"{station_name.lower()}_error"
 
-        sim_vs_obs_sub[error_col] = sim_vs_obs_sub[obs_col] - sim_vs_obs_sub[sim_col]
+            sim_vs_obs_sub[error_col] = sim_vs_obs_sub[obs_col] - sim_vs_obs_sub[sim_col]
+            
+            print(f"\n=== {station_name} ===")
+            
+            for sky in sim_vs_obs_sub["sky_type"].unique():
+                subset = sim_vs_obs_sub.loc[sim_vs_obs_sub["sky_type"] == sky].copy()
+
+                # Compute normalized absolute error (relative to total_clear_sky)
+                subset["mae_norm"] = (subset[error_col].abs() / subset["total_clear_sky"]) * 100
+
+                # Drop NaNs or invalid (e.g. clear sky = 0)
+                subset = subset.replace([np.inf, -np.inf], np.nan).dropna(subset=["mae_norm"])
+
+                if len(subset) == 0:
+                    print(f"  {sky}: no valid data")
+                    continue
+
+                mean_val = subset["mae_norm"].mean()
+                median_val = subset["mae_norm"].median()
+                std_val = subset["mae_norm"].std()
+                min_val = subset["mae_norm"].min()
+                max_val = subset["mae_norm"].max()
+
+                print(f"  {sky:>15s} → mean: {mean_val:6.2f}%, median: {median_val:6.2f}%, std: {std_val:6.2f}%, "
+                    f"min: {min_val:6.2f}%, max: {max_val:6.2f}%  (N={len(subset)})")
         
-        print(f"\n=== {station} ===")
         
-        for sky in sim_vs_obs_sub["sky_type"].unique():
-            subset = sim_vs_obs_sub.loc[sim_vs_obs_sub["sky_type"] == sky].copy()
-
-            # Compute normalized absolute error (relative to total_clear_sky)
-            subset["mae_norm"] = (subset[error_col].abs() / subset["total_clear_sky"]) * 100
-
-            # Drop NaNs or invalid (e.g. clear sky = 0)
-            subset = subset.replace([np.inf, -np.inf], np.nan).dropna(subset=["mae_norm"])
-
-            if len(subset) == 0:
-                print(f"  {sky}: no valid data")
-                continue
-
-            mean_val = subset["mae_norm"].mean()
-            median_val = subset["mae_norm"].median()
-            std_val = subset["mae_norm"].std()
-            min_val = subset["mae_norm"].min()
-            max_val = subset["mae_norm"].max()
-
-            print(f"  {sky:>15s} → mean: {mean_val:6.2f}%, median: {median_val:6.2f}%, std: {std_val:6.2f}%, "
-                f"min: {min_val:6.2f}%, max: {max_val:6.2f}%  (N={len(subset)})")
+    for station_name in stations:
+        sim_col = f"{station_name.lower()}_ghi_sim_horizontal"
+        obs_col = f"{station_name}_ghi_1M"
+        error_col = f"{station_name.lower()}_error"
         
+        # Plot error vs third variable 
         xlabel = r"$I_{\mathrm{sim}}$"
         ylabel = r"$I_{\mathrm{obs}} - I_{\mathrm{sim}}$"
 
         plot_error_vs_cloud_cover(sim_vs_obs_sub,
                             x_col=sim_col,
-                            cat_col=f"{station.lower()}_cloud_shadow",
+                            cat_col=f"{station_name.lower()}_cloud_shadow",
                             error_col=error_col,
-                            title=f"{station} Error vs. Simulated Irradiance", 
+                            title=f"{station_name} Error vs. Simulated Irradiance", 
                             xlabel=xlabel,
                             ylabel=ylabel, 
                             plot_regression=False,
-                            outpath=f"output/{station.lower()}_shadow_irradiance_vs_error.png")
+                            outpath=f"output/{station_name.lower()}_shadow_irradiance_vs_error.png")
         
-        sim_col_log = f"{station.lower()}_ghi_sim_horizontal_log"
-        obs_col_log = f"{station}_ghi_1M_log"
-        error_col_log = f"{station.lower()}_error_log"
+        sim_col_log = f"{station_name.lower()}_ghi_sim_horizontal_log"
+        obs_col_log = f"{station_name}_ghi_1M_log"
+        error_col_log = f"{station_name.lower()}_error_log"
 
         sim_vs_obs_sub[error_col_log] = sim_vs_obs_sub[obs_col_log] - sim_vs_obs_sub[sim_col_log]
         xlabel = r"$\log\!\left(\frac{I_{\mathrm{sim}}}{\sigma_{\mathrm{sim}}}\right)$"
@@ -1021,24 +1033,27 @@ def main():
 
         plot_error_vs_cloud_cover(sim_vs_obs_sub,
                             x_col=sim_col_log,
-                            cat_col=f"{station.lower()}_cloud_shadow",
+                            cat_col=f"{station_name.lower()}_cloud_shadow",
                             error_col=error_col_log,
-                            title=f"{station} Error vs. Simulated Irradiance (Log-Transformed)", 
+                            title=f"{station_name} Error vs. Simulated Irradiance (Log-Transformed)", 
                             xlabel=xlabel,
                             ylabel=ylabel, 
                             plot_regression=False,
-                            outpath=f"output/{station.lower()}_shadow_irradiance_vs_error_log.png")
+                            outpath=f"output/{station_name.lower()}_shadow_irradiance_vs_error_log.png")
 
 
     # Make sure date is datetime
     sim_vs_obs_sub["date"] = pd.to_datetime(sim_vs_obs_sub["date"])
     
     
-    # Compute error metrics 
-    for sim_scenario in ["_ghi_sim_horizontal_log"]: 
+    # ---------------------------------- Compute error metrics -----------------------------------
+    coarse_sims = [f"_ghi_sim_ECAD_{res}m" for res in COARSE_RESOLUTIONS]
+    coarse_log_sims = [sim_scen + "_log" for sim_scen in coarse_sims]
+    
+    for sim_scenario in coarse_sims: 
         for station_name in stations: 
-            sim_col = station_name.lower() + sim_scenario
-            obs_col = station_name + "_ghi_1M_log"
+            sim_col = station_name + sim_scenario
+            obs_col = station_name + "_ghi_1M"
             metrics = compute_error_metrics(sim_vs_obs_sub, sim_col=sim_col, obs_col=obs_col, tolerance_pct=10)
 
             # Filter to keep only the selected metrics

@@ -14,8 +14,8 @@ import shutil
 #sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 
 from src.model.surface_GHI_model import load_image, get_solar_angle, get_cloud_shadow_displacement
-from src.model.surface_GHI_model import calculate_sw_dir_cor, project_cloud_shadow, BBOX
-from src.model.surface_GHI_model import get_closest_lut_entry
+from src.model.surface_GHI_model import calculate_sw_dir_cor, project_cloud_shadow, get_closest_lut_entry
+from src.model import BBOX
 
 class TestSurfaceGHIModel(unittest.TestCase):
     def setUp(self):

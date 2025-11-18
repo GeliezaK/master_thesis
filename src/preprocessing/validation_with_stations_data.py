@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from netCDF4 import Dataset, num2date
 from cftime import DatetimeGregorian
+from src.model import COARSE_RESOLUTIONS
 
 def merge_by_closest_timestamp(obs_table_path, frost_table_path):
     """Add GHI measurements from Florida and Flesland stations to obs_table based on closest timestamp.
@@ -98,7 +99,8 @@ def add_simulated_florida_flesland_ghi_by_date(obs_table_path, df, out_path):
     df["date"] = df["time"].dt.date
     
     # Drop duplicates (if they exist, values are identical anyway)
-    df_unique = df.drop_duplicates(subset="date")[["date", "Florida_ghi_sim_ECAD", "Flesland_ghi_sim_ECAD"]]
+    df_unique = df.drop_duplicates(subset="date")
+    df_unique = df_unique.drop(columns=["time"])
 
     # Left join on date → preserves all obs rows, NaN if no match
     merged = obs.merge(df_unique, on="date", how="left")
@@ -116,7 +118,9 @@ if __name__ == "__main__":
     frost_table_path = "data/processed/frost_ghi_1M_Flesland_Florida_10:30-11:30UTC.csv"
     model_ghi_path = "data/processed/simulated_ghi_thresh40.nc"
     obs_with_stations_data_path = "data/processed/s2_cloud_cover_table_small_and_large_with_stations_data.csv"
-    
+    obs_with_pixel_sim = "data/processed/s2_cloud_cover_with_stations_with_pixel_sim.csv"
+    outpath_with_pixel_sim = "data/processed/s2_cloud_cover_with_stations_with_pixel_sim_test.csv"
+
     # Step 1: Merge Stations data with cloud_cover aso observations table
     """ obs_table = merge_by_closest_timestamp(obs_table_path, frost_table_path)
     print(obs_table.head())
@@ -132,15 +136,21 @@ if __name__ == "__main__":
     # Flesland, frost: 60.2892, 5.2265; ECAD: 60.28917, 5.22639, plotting source unknown: 60.292792, 5.222689
     Florida_lat, Florida_lon = 60.38306, 5.33306 # source: ECAD
     Flesland_lat, Flesland_lon = 60.28917, 5.22639
+    
 
-    times, Florida_ghi = extract_pixel_by_location(model_ghi_path, Florida_lat, Florida_lon)
-    times, Flesland_ghi = extract_pixel_by_location(model_ghi_path, Flesland_lat, Flesland_lon)
-    extracted_pixels_df = pd.DataFrame({
-        "time": times,
-        "Florida_ghi_sim_ECAD": Florida_ghi,
-        "Flesland_ghi_sim_ECAD": Flesland_ghi
-    })
-    out_path = "data/processed/s2_cloud_cover_table_small_and_large_with_simulated_florida_flesland_ghi.csv"
-    merged = add_simulated_florida_flesland_ghi_by_date(obs_with_stations_data_path, extracted_pixels_df, out_path)
-
+    for res in COARSE_RESOLUTIONS: 
+        ghi_path = f"data/processed/simulated_ghi_without_terrain_only_mixed_{res}m.nc"
+        times, Florida_ghi = extract_pixel_by_location(ghi_path, Florida_lat, Florida_lon)
+        times, Flesland_ghi = extract_pixel_by_location(ghi_path, Flesland_lat, Flesland_lon)
+        extracted_pixels_df = pd.DataFrame({
+            "time": times,
+            f"Florida_ghi_sim_ECAD_{res}m": Florida_ghi,
+            f"Flesland_ghi_sim_ECAD_{res}m": Flesland_ghi
+        })
+        print(f"---------------- Extracted pixels head (res {res}m) --------------")
+        print(extracted_pixels_df.head())
+        merged = add_simulated_florida_flesland_ghi_by_date(obs_with_pixel_sim, extracted_pixels_df, obs_with_pixel_sim)
+        print("----------------- Merged with existing csv --------------------")
+        print(merged[["date", f"Florida_ghi_sim_ECAD_{res}m", f"Flesland_ghi_sim_ECAD_{res}m", "florida_ghi_sim_horizontal", "flesland_ghi_sim_horizontal"]].head())
+        print(merged[[f"Florida_ghi_sim_ECAD_{res}m", f"Flesland_ghi_sim_ECAD_{res}m", "florida_ghi_sim_horizontal", "flesland_ghi_sim_horizontal"]].describe())
     

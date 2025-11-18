@@ -126,6 +126,39 @@ def read_image_and_append(path, data_list):
         data_list.append(data)
         print(f"pixel range: min: {np.round(np.nanmin(data),3)}, max: {np.round(np.nanmax(data),3)}")
         print(f"max pixel difference: {np.round((np.nanmax(data) - np.nanmin(data)),3)} %")
+ 
+ 
+def plot_band_with_extent(data, left, right, bottom, top, outpath):
+    print(f"Extent (left, right, bottom, top): ({left}, {right}, {bottom}, {top}) ")
+    print(f"Data shape: {data.shape}")
+    # Create figure
+    plt.figure(figsize=(8, 6))
+    plt.imshow(
+        data,
+        extent=(left, right, bottom, top),
+        cmap='gray',  # or 'viridis', 'Blues', etc.
+        origin='upper'
+    )
+    plt.xlabel("Longitude")
+    plt.ylabel("Latitude")
+    plt.title("")  # no title as requested
+
+    # Save to outpath
+    plt.savefig(f"{outpath}.png", dpi=150, bbox_inches='tight')
+    print(f"Saved figure to {outpath}.")
+           
+        
+def plot_tif_with_latlon(tif_path, outpath):
+    # Open raster file
+    with rasterio.open(tif_path) as src:
+        data = src.read(1)
+
+        # Compute coordinate bounds for axes
+        left, bottom, right, top = src.bounds
+    
+    plot_band_with_extent(data, left, right, bottom, top, outpath)
+    
+
 
 def plot_monthly_results(source, var_name, outpath, title, colorbar_ylabel, histogram_title, dpi=150, 
                          value_ranges=None, value_colors=None):

@@ -3,12 +3,9 @@ import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-import matplotlib as mpl
-import pandas as pd
-from tqdm import tqdm
-from netCDF4 import Dataset, date2num, num2date
+import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap, BoundaryNorm
 from datetime import datetime, timezone
-from src.model import MIXED_THRESHOLD, OVERCAST_THRESHOLD
 from src.plotting.high_res_maps import plot_single_band, plot_monthly_results, plot_seasonal_results
 
 def plot_ghi_for_timestep(ghi_file, ind=0, outdir="output"):
@@ -32,9 +29,19 @@ def plot_ghi_for_timestep(ghi_file, ind=0, outdir="output"):
     colors = ["black", "darkblue", "mediumblue", "blueviolet", "purple", "mediumvioletred",
               "crimson", "deeppink", "salmon", "orangered", "darkorange", "orange", "yellow"]
 
-    plot_single_band(ghi, f"output/ghi_total_{ts_str}.png", 
-            f"GHI Total for {ts_str}",
-            "GHI (W/m²)", values, colors)
+    # Create colormap and normalization
+    cmap = ListedColormap(colors)
+    norm = BoundaryNorm(values, cmap.N, extend="max")
+
+    # Pass cmap and norm to your plotting function
+    plot_single_band(
+        ghi,
+        f"output/ghi_total_{ts_str}.png",
+        f"GHI Total for {ts_str}",
+        "GHI (W/m²)",
+        cmap=cmap,
+        norm=norm
+    )
     
 
 def plot_sky_type_aggregated(aggregated_ghi_maps_outpath, output_dir="output"):
@@ -124,21 +131,21 @@ def plot_irradiance_all_obs(ghi_monthly_maps_filepath):
     
     
 if __name__ == "__main__":
-    ghi_maps_filepath = "data/processed/simulated_ghi.nc"
+    ghi_maps_filepath = "data/processed/simulated_ghi_without_terrain_only_mixed_100m.nc"
     monthly_ghi_maps = "data/processed/simulated_irradiance_monthly.nc"
     monthly_clear_sky_index_maps = "data/processed/simulated_clear_sky_index_monthly_mixed_sky.nc"
     sim_vs_obs_path = "data/processed/s2_cloud_cover_with_stations_with_pixel_sim.csv"
     aggregated_sky_type_clear_sky_index_outpath = "data/processed/clear_sky_index_sky_type_all_time_11UTC.nc"
 
-    plot_monthly_results(monthly_clear_sky_index_maps, "clear_sky_index", "output/monthly_clear_sky_index_mixed_UTC11.png",
+    """plot_monthly_results(monthly_clear_sky_index_maps, "clear_sky_index", "output/monthly_clear_sky_index_mixed_UTC11.png",
                          "Monthly Clear Sky Index (2015-2025, 11:00 UTC)", 
                          "Mean Clear Sky Index", 
                          "Distribution of Pixel Values for Monthly Clear Sky Index (11:00 UTC)", 
                          value_ranges=[0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9], 
                          value_colors=["darkblue", "blue", "teal", "green",
                                        "lime", "greenyellow", "yellow", "gold", "orange", "darkorange"]) 
-    
-    #plot_ghi_for_timestep(ghi_file=ghi_maps_filepath, ind=3, outdir="output")
+    """
+    plot_ghi_for_timestep(ghi_file=ghi_maps_filepath, ind=3, outdir="output")
     """ plot_monthly_results(monthly_ghi_maps, "I_total", "output/monthly_irradiance_UTC11.png",
                          "Monthly Surface Irradiance (2015-2025, 11:00 UTC)", 
                          "Mean Total Irradiance [W/m²]", 
