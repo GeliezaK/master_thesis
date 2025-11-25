@@ -15,6 +15,14 @@ from datetime import datetime
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from src.model import BBOX, MIXED_THRESHOLD, OVERCAST_THRESHOLD
 
+def classify_sky_type(cc):
+        if cc <= MIXED_THRESHOLD:
+            return "clear"
+        elif cc >= OVERCAST_THRESHOLD:
+            return "overcast"
+        else:
+            return "mixed"
+
 def inspect_file(filepath, variable_name):
     # open the netCDF file
     ds = xr.open_dataset(filepath, decode_times=False)
@@ -986,11 +994,8 @@ def summarize_monthly_cloud_stats(df, cloud_col="cloud_cover", sky_type_col="sky
         .unstack(fill_value=0)
     )
 
-    # Convert to probabilities per month
-    sky_type_probs = sky_type_counts.div(sky_type_counts.sum(axis=1), axis=0)
-
     # Combine both summaries
-    monthly_summary = monthly_cloud_stats.join(sky_type_probs)
+    monthly_summary = monthly_cloud_stats.join(sky_type_counts)
     monthly_summary.reset_index(inplace=True)
 
     # Print summary
@@ -1011,6 +1016,89 @@ def summarize_monthly_cloud_stats(df, cloud_col="cloud_cover", sky_type_col="sky
     print(f"Histogram of cloud cover saved to {outpath}.")
 
     return monthly_summary
+
+
+
+def get_area_mean_clear_sky_index(clear_sky_index_nc_filepath):
+    dates = []
+    means = []
+
+    with Dataset(clear_sky_index_nc_filepath, "r") as src:
+        # --- Extract time variable and convert to datetimes ---
+        time_var = src.variables["time"]
+        time_units = time_var.units
+        time_calendar = getattr(time_var, "calendar", "standard")
+
+        times = num2date(time_var[:], units=time_units, calendar=time_calendar)
+
+        # --- Extract variable reference ---
+        csi_var = src.variables["clear_sky_index"]
+
+        # --- Loop over time dimension ---
+        for i, t in tqdm(enumerate(times), total=len(times), desc="Calculating area-wide mean clear sky index..."):
+            # Read slice of shape (lat, lon) for timestep i
+            csi_slice = csi_var[i, :, :]
+
+            # Compute mean, ignoring NaNs
+            mean_val = np.nanmean(csi_slice)
+
+            dates.append(t)
+            means.append(mean_val)
+
+    # --- Construct DataFrame ---
+    df = pd.DataFrame({
+        "date": dates,
+        "mean_clear_sky_index": means
+    })
+
+    return df
+
+def merge_area_mean_clear_sky_index_with_sky_type(area_mean_clear_sky_index_path, sim_vs_obs_path): 
+    # --- Load and normalize dates ---
+    clear_sky_df = pd.read_csv(area_mean_clear_sky_index_path)
+    clear_sky_df["date"] = pd.to_datetime(clear_sky_df["date"]).dt.normalize()
+
+    df_sim = pd.read_csv(sim_vs_obs_path)
+    df_sim["sky_type"] = df_sim["cloud_cover_large"].apply(classify_sky_type)
+    df_sim["date"] = pd.to_datetime(df_sim["date"]).dt.normalize()
+
+    # --- Add month + fix sky_type for existing rows ---
+    clear_sky_df["month"] = clear_sky_df["date"].dt.month
+    clear_sky_df["sky_type"] = "mixed"   # set all to mixed as required
+
+    # --- Identify missing dates ---
+    dates_in_clear = set(clear_sky_df["date"])
+    df_sim_missing = df_sim[~df_sim["date"].isin(dates_in_clear)].copy()
+
+    print(f"Missing dates to append: {len(df_sim_missing)}")
+
+    # --- Compute clear_sky_index for missing days ---
+    # Required columns must exist in df_sim
+    # florida_ghi_sim_horizontal : simulated irradiance
+    # total_clear_sky            : clear-sky irradiance
+    df_sim_missing["mean_clear_sky_index"] = (
+        df_sim_missing["florida_ghi_sim_horizontal"]
+        / df_sim_missing["total_clear_sky"]
+    )
+
+    # --- Add month column if not present ---
+    if "month" not in df_sim_missing:
+        df_sim_missing["month"] = df_sim_missing["date"].dt.month
+
+    # --- Extract needed columns ---
+    df_sim_missing = df_sim_missing[["date", "month", "sky_type", "mean_clear_sky_index"]]
+
+    # --- Append to clear_sky_df ---
+    clear_sky_df_updated = pd.concat([clear_sky_df, df_sim_missing], ignore_index=True)
+
+    # --- Optional: sort by date ---
+    clear_sky_df_updated = clear_sky_df_updated.sort_values("date").reset_index(drop=True)
+
+    print(clear_sky_df_updated.head())
+    print(clear_sky_df_updated.tail())
+
+    # --- Save ---
+    clear_sky_df_updated.to_csv(area_mean_clear_sky_index_outpath, index=False)
     
 
 if __name__ == "__main__":
@@ -1029,7 +1117,33 @@ if __name__ == "__main__":
     monthly_clear_sky_index_maps = "data/processed/simulated_clear_sky_index_monthly_mixed_sky.nc"
     aggregated_sky_type_clear_sky_index_outpath = "data/processed/clear_sky_index_sky_type_all_time_11UTC.nc"
     mixed_sky_ghi ="data/processed/simulated_ghi_without_terrain_only_mixed.nc"
+    area_mean_clear_sky_index_outpath = "data/processed/area_mean_clear_sky_index_per_obs.csv"
+
     
+    # --------------------- Data exploration --------------------------------
+    #inspect_file(mixed_sky_ghi, "clear_sky_index")
+    #plot_claas3_file(aux_file, sample_file, "cth")
+    #plot_monthly_mean_albedos(clara_csv=clara_csv, s5p_csv=s5p_csv, outpath=outpath)
+    #crop_to_roi("data/raw/claas-3_test/*.nc", "data/raw/claas-3_test_small_roi.nc", aux_filepath = aux_file)
+    #cfc_diurnal_cycle_monthly("data/comet2_roi_month.nc")
+    #visualize_peak_hour("data/comet2_roi_month.nc")
+       
+    # ----------------------- Extract albedo and cloud properties ----------------------
+    #add_claas3_variable_to_cloud_cover_table(claas_folder_cpp, aux_file, s2_csv, 
+    #                                         variable_name="cgt", file_prefix="CPPin")
+    
+    #df_albedo = extract_clara_albedo(data_folder, clara_csv, target_lon=5.33)
+    #df_albedo = pd.read_csv(clara_csv, parse_dates=["date"])
+    #print(df_albedo[["black_sky_albedo_median", "black_sky_albedo_all_median"]].describe())
+    #s5p_csv = "data/processed/s5p_monthly_mean_surface_albedo.csv"
+    #outpath = "output/monthly_mean_albedo_comparison_incl_snow.png"
+    
+    # ------------------- Monthly sky type probabilities ---------------------
+    #df = calculate_monthly_sky_type_probabilities()
+    #df = pd.read_csv("data/processed/claas3_cloud_cover_sky_type_from_cot.csv")
+    #claas_monthly_summary = summarize_monthly_cloud_stats(df)
+    
+    # ----------------- Clear Sky index ------------------
     #convert_ghi_to_clear_sky_index(irradiance_infile_nc=mixed_sky_ghi, cloud_cover_table_path=sim_vs_obs_path)
     
     """aggregate_variable_monthly(
@@ -1043,32 +1157,12 @@ if __name__ == "__main__":
     
     clear_sky_index_per_sky_type(single_ghi_maps_filepath=single_ghi_maps, cloud_cover_table_path=sim_vs_obs_path, 
                                  aggregated_ghi_maps_outpath=aggregated_sky_type_clear_sky_index_outpath)
-     """
-       
-    #add_claas3_variable_to_cloud_cover_table(claas_folder_cpp, aux_file, s2_csv, 
-    #                                         variable_name="cgt", file_prefix="CPPin")
+    """
     
-    #df_albedo = extract_clara_albedo(data_folder, clara_csv, target_lon=5.33)
-    #df_albedo = pd.read_csv(clara_csv, parse_dates=["date"])
-    #print(df_albedo[["black_sky_albedo_median", "black_sky_albedo_all_median"]].describe())
-    #s5p_csv = "data/processed/s5p_monthly_mean_surface_albedo.csv"
-    #outpath = "output/monthly_mean_albedo_comparison_incl_snow.png"
-    
-    #df = calculate_monthly_sky_type_probabilities()
-    df = pd.read_csv("data/processed/claas3_cloud_cover_sky_type_from_cot.csv")
-    #claas_monthly_summary = summarize_monthly_cloud_stats(df)
-    
+    # -------------------- Monthly sky type probabilities ---------------------
     df_sim = pd.read_csv(sim_vs_obs_path)
 
     # Derive sky_type from cloud_cover_large (assuming in %)
-    def classify_sky_type(cc):
-        if cc <= MIXED_THRESHOLD:
-            return "clear"
-        elif cc >= OVERCAST_THRESHOLD:
-            return "overcast"
-        else:
-            return "mixed"
-
     df_sim["sky_type"] = df_sim["cloud_cover_large"].apply(classify_sky_type)
 
     # Add month (from date column if available)
@@ -1083,23 +1177,21 @@ if __name__ == "__main__":
     df_sim_subset = df_sim[["month", "cloud_cover_large", "sky_type"]].copy()
 
     # Run summary
-    sim_monthly_summary = summarize_monthly_cloud_stats(
+    """sim_monthly_summary = summarize_monthly_cloud_stats(
         df_sim_subset, 
         cloud_col="cloud_cover_large",
         sky_type_col="sky_type"
     )
-    # TODO: next steps: Use sentinel-2 data (more accurate for clouds at high latitudes). 
-    # - get number of observations per month
-    # - Plot cloud type probability in bars for each month and the number of available data in separate y-axis
-    # - Get the sd for cloud type probability for each cloud type by calculating it for each year 
-    # - Get cloud type/cloud cover distribution for each month and draw from there for annual simulation
     
-    #inspect_file(sample_file, "cot")
-    #plot_claas3_file(aux_file, sample_file, "cth")
-    #plot_monthly_mean_albedos(clara_csv=clara_csv, s5p_csv=s5p_csv, outpath=outpath)
-    #crop_to_roi("data/raw/claas-3_test/*.nc", "data/raw/claas-3_test_small_roi.nc", aux_filepath = aux_file)
-    #cfc_diurnal_cycle_monthly("data/comet2_roi_month.nc")
-    #visualize_peak_hour("data/comet2_roi_month.nc")
-    #print(roi)
+    monthly_sky_types = sim_monthly_summary[["month", "clear", "mixed", "overcast"]]
+    monthly_sky_types.to_csv("data/processed/monthly_sky_type_counts.csv", index=False)"""
+    
+    # --------------------- Extract clear-sky area mean (for annual sim) -------------------
+    #clear_sky_df = get_area_mean_clear_sky_index(mixed_sky_ghi)
+    #clear_sky_df.to_csv(area_mean_clear_sky_index_outpath, index=False)
+    merge_area_mean_clear_sky_index_with_sky_type(area_mean_clear_sky_index_outpath, sim_vs_obs_path)
+
+    
+    
     
     

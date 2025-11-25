@@ -41,6 +41,7 @@ def get_sunshine_hours_for_doy(doy, location):
     else:
         return []  # Polar night fallback
 
+
 # Parameter discretizations
 # Day of year: 15th of each month 
 # Reference year (non-leap year assumed, e.g. 2021)
@@ -498,7 +499,6 @@ def generate_uvspec_input(doy, hour, albedo, profile,
                           cloud_file=None, cloud_phase=None, cot=None):
     month = doy_to_date[doy][0]
     day = doy_to_date[doy][1]
-    # TODO: do this with solar angles instead of times and choose more values for CGT
     lines = [
         #"verbose", #disable for speed-up
         "latitude N 60.39", # Bergen latitude and longitude, combine with time to select SZA and atm_profile
@@ -516,7 +516,6 @@ def generate_uvspec_input(doy, hour, albedo, profile,
         f"albedo {albedo}",
         f"altitude {ALTITUDE}"
     ]
-    # TODO: change Tau to without 550nm here (new values from Claas)
     if cloud_file and cloud_phase and cot:
         if cloud_phase == "ice":
             lines.append(f"ic_file 1D {cloud_file}")

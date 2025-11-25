@@ -809,6 +809,12 @@ def main():
     assert all(col in sim_vs_obs.columns for col in required_cols), \
         f"Missing columns: {set(required_cols) - set(sim_vs_obs.columns)}"
 
+    # -------------------------- Plot missing values ---------------------
+    
+
+
+
+
     # ------------------------------ Add sky type ---------------------------
     # Define conditions
     conditions = [
