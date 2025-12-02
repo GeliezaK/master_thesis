@@ -1,6 +1,7 @@
 import rasterio
 import numpy as np
 import os
+import xarray as xr
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
@@ -161,7 +162,7 @@ def plot_tif_with_latlon(tif_path, outpath):
 
 
 def plot_monthly_results(source, var_name, outpath, title, colorbar_ylabel, histogram_title, dpi=150, 
-                         value_ranges=None, value_colors=None):
+                         cmap = None, norm=None):
     """
     Plot monthly cloud cover or ghi maps (12 subplots) + histograms.
     
@@ -201,8 +202,9 @@ def plot_monthly_results(source, var_name, outpath, title, colorbar_ylabel, hist
     # Case 2: NetCDF file
     # -------------------------------------------------------------------------
     elif isinstance(source, str) and source.endswith(".nc"):
-        with Dataset(source, "r") as nc:
-            data = nc.variables[var_name][:]  # shape (12, lat, lon)
+        ds = xr.open_dataset(source)
+        data = ds[var_name].values # shape: (12, lat, lon)
+        ds.close()
         for i in range(data.shape[0]):
             monthly_data.append(data[i, :, :])
     else:
@@ -217,16 +219,9 @@ def plot_monthly_results(source, var_name, outpath, title, colorbar_ylabel, hist
     print(f"vmax: {vmax}")
     
     
-    if value_ranges is not None and value_colors is not None:
-        # Ensure last bin catches everything above the last boundary
-        if value_ranges[-1] <= vmax:
-            boundaries = value_ranges + [vmax + 1e-6]
-        else:
-            boundaries = value_ranges
-        cmap = ListedColormap(value_colors)
-        norm = BoundaryNorm(boundaries, cmap.N)
-    else:
+    if cmap is None:
         cmap = cm.get_cmap("viridis")
+    if norm is None: 
         norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
 
     # -------------------------------------------------------------------------
@@ -318,7 +313,7 @@ def plot_monthly_results(source, var_name, outpath, title, colorbar_ylabel, hist
     print(f"Monthly histogram plot saved to {hist_outpath}")
     
 
-def plot_seasonal_results(source, var_name, outpath, title, colorbar_label, histogram_title, dpi=150, value_colors=None):
+def plot_seasonal_results(source, var_name, count_var, outpath, title, colorbar_label, histogram_title, dpi=150, cmap=None):
     """
     Compute and plot seasonal mean maps + histograms from monthly data.
 
@@ -350,7 +345,6 @@ def plot_seasonal_results(source, var_name, outpath, title, colorbar_label, hist
         with Dataset(source, "r") as nc:
             data = nc.variables[var_name][:]  # shape (12, lat, lon)
             months = nc.variables["month"][:]
-            count_var = f"GHI_total_monthly_count"
             if count_var in nc.variables:
                 monthly_counts = nc.variables[count_var][:]  # shape (12,)
             else:
@@ -396,12 +390,11 @@ def plot_seasonal_results(source, var_name, outpath, title, colorbar_label, hist
 
         vmin = np.nanmin(seasonal_data[idx])
         vmax = np.nanpercentile(seasonal_data[idx], 99)
+        print(f"season {season}, vmin: {vmin}, vmax: {vmax}")
 
-        if value_colors is None:
+        if cmap is None:
             cmap = cm.get_cmap("viridis")
-        else:
-            cmap = mcolors.ListedColormap(value_colors)
-
+        
         norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
 
 
@@ -467,6 +460,212 @@ def plot_seasonal_results(source, var_name, outpath, title, colorbar_label, hist
     hist_outpath = os.path.splitext(outpath)[0] + "_histograms.png"
     plt.savefig(hist_outpath, bbox_inches="tight")
     print(f"✅ Seasonal histogram plot saved to {hist_outpath}")
+
+
+def plot_seasonal_comparison_maps(
+        source_nc,
+        variable_names,
+        variable_names_plotting,
+        count_vars,
+        outpath,
+        title,
+        colorbar_label,
+        histogram_title,
+        cmap=None,
+        dpi=150,
+    ):
+    """
+    Creates two figures
+    (A) Seasonal comparison maps: 4 seasons × N variables  
+        - each row uses shared colorbar
+        - weighted seasonal means
+
+    (B) Seasonal comparison histograms: 4 seasons × N variables  
+        - histogram colors use same cmap + norm as maps
+        - per-season color scale identical to figure (A)
+
+    Parameters
+    ----------
+    source_nc : str
+        Path to .nc file
+    variable_names : list[str]
+        List of data variable names to compare
+    count_vars : list[str]
+        Monthly count variable names corresponding to each data variable
+    outpath : str
+        Output .png filename
+    title : str
+        Global title
+    colorbar_label : str
+    cmap : Colormap, optional
+    dpi : int
+    """
+
+    if cmap is None:
+        cmap = cm.get_cmap("viridis")
+
+    # -------------------------------
+    # Load data
+    # -------------------------------
+    with Dataset(source_nc, "r") as nc:
+        monthly_data = {v: nc.variables[v][:] for v in variable_names}
+        monthly_counts = {c: nc.variables[c][:] for c in count_vars}
+
+    n_vars = len(variable_names)
+
+    # Prepare storage: seasonal_data[season][varname]
+    seasonal_data = {s: {} for s in seasons}
+
+    # -------------------------------
+    # Compute seasonal weighted means
+    # -------------------------------
+    for season in seasons:
+        idxs = [month - 1 for month in season_months[season]]
+        for var, cnt in zip(variable_names, count_vars):
+            data_stack = monthly_data[var][idxs]          # shape (3, lat, lon)
+            count_stack = monthly_counts[cnt][idxs]       # shape (3,)
+
+            # Replace 0 with NaN so they don't contribute
+            weights = np.where(count_stack == 0, np.nan, count_stack)
+
+            weighted_sum = np.nansum([data_stack[i] * weights[i] for i in range(len(idxs))], axis=0)
+            total_weight = np.nansum(weights)
+
+            seasonal_mean = weighted_sum / total_weight if total_weight > 0 else np.nan
+            seasonal_data[season][var] = seasonal_mean
+
+    # -------------------------------
+    # Create figure: 4 rows × n_vars columns
+    # -------------------------------
+    fig, axes = plt.subplots(
+        len(seasons),
+        n_vars,
+        figsize=(5 * n_vars, 18),
+        dpi=dpi,
+        subplot_kw={'projection': ccrs.PlateCarree()},
+        constrained_layout=True
+    )
+    fig.suptitle(title, fontsize=22)
+
+    # -------------------------------
+    # Plot rows
+    # -------------------------------
+    season_norms = {}
+    season_min = {}
+    season_max = {}
+    for r, season in enumerate(seasons):
+
+        # Determine colorbar scale for all variables in this season
+        vmin = min(np.nanmin(seasonal_data[season][v]) for v in variable_names)
+        vmax = max(np.nanmax(seasonal_data[season][v]) for v in variable_names)
+        norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+        season_norms[season] = norm
+        season_min[season] = vmin
+        season_max[season] = vmax
+
+        for c, var in enumerate(variable_names):
+            ax = axes[r, c] if n_vars > 1 else axes[r]  # handle N=1 case
+            season_map = seasonal_data[season][var]
+
+            # --- Map ---
+            ax.set_title(f"{season} - {variable_names_plotting[c]}", fontsize=14)
+            ax.set_extent(extent, crs=ccrs.PlateCarree())
+
+            img = ax.imshow(
+                season_map, origin="upper",
+                extent=extent, cmap=cmap, norm=norm,
+                transform=ccrs.PlateCarree()
+            )
+
+            # Add coastlines
+            if coast_clipped is not None or gdf is not None:
+                plot_landmarks(ax, coast_clipped, gdf)
+
+            # Gridline rules
+            gl = ax.gridlines(draw_labels=True, linestyle="--", alpha=0.4)
+            gl.top_labels = False
+            gl.right_labels = False
+            gl.left_labels = (c == 0)
+            gl.bottom_labels = (r == len(seasons) - 1)
+
+            # --- Add row-wise colorbar (once per season) ---
+            if c == n_vars - 1:  # last column in the row
+                cbar = fig.colorbar(
+                    img, ax=axes[r, :],
+                    orientation="vertical",
+                    fraction=0.015, pad=0.02
+                )
+                cbar.set_label(colorbar_label)
+
+    # -------------------------------
+    # Save figure
+    # -------------------------------
+    plt.savefig(outpath, bbox_inches="tight")
+    print(f"✅ Seasonal comparison map saved to {outpath}")
+    
+    # -----------------------------------------
+    # Histograms
+    # -----------------------------------------
+    
+    hist_outpath = outpath.replace(".png", "_histograms.png")
+
+    fig, axes = plt.subplots(
+        len(seasons),
+        n_vars,
+        figsize=(5 * n_vars, 18),
+        dpi=dpi,
+        constrained_layout=True
+    )
+    fig.suptitle(histogram_title, fontsize=22)
+
+    for r, season in enumerate(seasons):
+        norm = season_norms[season]
+
+        # Used for colorizing histogram bars
+        for c, var in enumerate(variable_names):
+            ax = axes[r, c] if n_vars > 1 else axes[r]
+
+            data = seasonal_data[season][var].flatten()
+            data = data[np.isfinite(data)]
+
+            if len(data) == 0:
+                ax.text(0.5, 0.5, "No data", ha="center")
+                continue
+
+            vmin = np.nanmin(data)
+            vmax = np.nanmax(data)
+            mean_val = np.nanmean(data)
+            diff = vmax - vmin
+
+            # Histogram
+            counts, bins = np.histogram(data, bins=30, range=(season_min[season], season_max[season]))
+            bin_centers = 0.5 * (bins[:-1] + bins[1:])
+            bar_colors = [cmap(norm(b)) for b in bin_centers]
+
+            ax.bar(
+                bin_centers, counts,
+                width=(bins[1] - bins[0]),
+                color=bar_colors, edgecolor="black"
+            )
+
+            ax.axvline(mean_val, color='red', linewidth=1.5)
+
+            ax.set_title(f"{season} – {variable_names_plotting[c]}", fontsize=12)
+            ax.set_xlabel(colorbar_label)
+            ax.set_ylabel("Pixel Count")
+            ax.grid(True, linestyle='--', alpha=0.5)
+
+            stats_text = f"min: {vmin:.2f}\nmax: {vmax:.2f}\nΔ: {diff:.2f}"
+            ax.text(
+                0.95, 0.95, stats_text, transform=ax.transAxes,
+                fontsize=9, ha='right', va='top',
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
+                          edgecolor="gray", alpha=0.8)
+            )
+
+    plt.savefig(hist_outpath, bbox_inches="tight")
+    print(f"✅ Seasonal comparison histograms saved to {hist_outpath}")
+
 
     
 def plot_yearly_cloud_cover(path, outpath):

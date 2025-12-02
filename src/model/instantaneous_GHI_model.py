@@ -1,8 +1,3 @@
-# Model surface GHI 
-# Inputs:   - filepath to DSM/DEM file 
-#           - folderpath to LUT 
-#           - folderpath to S2 images
-
 import rasterio
 from rasterio.transform import from_origin
 from tqdm import tqdm
@@ -136,6 +131,23 @@ def get_closest_lut_entry(lut, unique_values, doy, hour, albedo, altitude_km,
             'diffuse_cloudy': diffuse_cloudy}
     
     return res_dict
+
+def build_ghi_clear_lut(path = "data/processed/LUT/claas3/LUT.csv"):
+    ghi_clear_table = np.full((365, 24), np.nan)
+    lut = pd.read_csv(path)
+    variables = ["doy", "hour", "albedo", "altitude_km", "cloud_top_km", "cot", "cloud_phase"]
+    unique_values = {var: lut[var].unique() for var in variables if var in lut.columns}
+    surface_albedo = 0.129
+    altitude = 0.08 
+    
+    for doy in range(1, 366):
+        for hour in range(24):
+            res = get_closest_lut_entry(lut, unique_values, doy, hour, surface_albedo, altitude)
+            if res["direct_clear"] is not None:
+                ghi_clear_table[doy-1, hour] = (
+                    res["direct_clear"] + res["diffuse_clear"]
+                )
+    return ghi_clear_table
 
 
 def idx_from_time(times_array, timestamp, by_time_of_year=False, max_delta=1.0, verbose=False):

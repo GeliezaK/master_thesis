@@ -1118,10 +1118,11 @@ if __name__ == "__main__":
     aggregated_sky_type_clear_sky_index_outpath = "data/processed/clear_sky_index_sky_type_all_time_11UTC.nc"
     mixed_sky_ghi ="data/processed/simulated_ghi_without_terrain_only_mixed.nc"
     area_mean_clear_sky_index_outpath = "data/processed/area_mean_clear_sky_index_per_obs.csv"
+    monthly_longterm_sim_results = "data/processed/longterm_ghi_spatially_resolved_monthly.nc"
 
     
     # --------------------- Data exploration --------------------------------
-    #inspect_file(mixed_sky_ghi, "clear_sky_index")
+    inspect_file(monthly_longterm_sim_results, "mixed_sky_ghi")
     #plot_claas3_file(aux_file, sample_file, "cth")
     #plot_monthly_mean_albedos(clara_csv=clara_csv, s5p_csv=s5p_csv, outpath=outpath)
     #crop_to_roi("data/raw/claas-3_test/*.nc", "data/raw/claas-3_test_small_roi.nc", aux_filepath = aux_file)
@@ -1157,7 +1158,7 @@ if __name__ == "__main__":
     
     clear_sky_index_per_sky_type(single_ghi_maps_filepath=single_ghi_maps, cloud_cover_table_path=sim_vs_obs_path, 
                                  aggregated_ghi_maps_outpath=aggregated_sky_type_clear_sky_index_outpath)
-    """
+    
     
     # -------------------- Monthly sky type probabilities ---------------------
     df_sim = pd.read_csv(sim_vs_obs_path)
@@ -1177,7 +1178,7 @@ if __name__ == "__main__":
     df_sim_subset = df_sim[["month", "cloud_cover_large", "sky_type"]].copy()
 
     # Run summary
-    """sim_monthly_summary = summarize_monthly_cloud_stats(
+    sim_monthly_summary = summarize_monthly_cloud_stats(
         df_sim_subset, 
         cloud_col="cloud_cover_large",
         sky_type_col="sky_type"
@@ -1189,7 +1190,7 @@ if __name__ == "__main__":
     # --------------------- Extract clear-sky area mean (for annual sim) -------------------
     #clear_sky_df = get_area_mean_clear_sky_index(mixed_sky_ghi)
     #clear_sky_df.to_csv(area_mean_clear_sky_index_outpath, index=False)
-    merge_area_mean_clear_sky_index_with_sky_type(area_mean_clear_sky_index_outpath, sim_vs_obs_path)
+    #merge_area_mean_clear_sky_index_with_sky_type(area_mean_clear_sky_index_outpath, sim_vs_obs_path)
 
     
     

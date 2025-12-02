@@ -6,7 +6,7 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
 from datetime import datetime, timezone
-from src.plotting.high_res_maps import plot_single_band, plot_monthly_results, plot_seasonal_results
+from src.plotting.high_res_maps import plot_single_band, plot_monthly_results, plot_seasonal_results, plot_seasonal_comparison_maps
 
 def plot_ghi_for_timestep(ghi_file, ind=0, outdir="output"):
     """
@@ -134,18 +134,26 @@ if __name__ == "__main__":
     ghi_maps_filepath = "data/processed/simulated_ghi_without_terrain_only_mixed_100m.nc"
     monthly_ghi_maps = "data/processed/simulated_irradiance_monthly.nc"
     monthly_clear_sky_index_maps = "data/processed/simulated_clear_sky_index_monthly_mixed_sky.nc"
+    monthly_longterm_sim_results = "data/processed/longterm_ghi_spatially_resolved_monthly.nc"
     sim_vs_obs_path = "data/processed/s2_cloud_cover_with_stations_with_pixel_sim.csv"
     aggregated_sky_type_clear_sky_index_outpath = "data/processed/clear_sky_index_sky_type_all_time_11UTC.nc"
 
-    """plot_monthly_results(monthly_clear_sky_index_maps, "clear_sky_index", "output/monthly_clear_sky_index_mixed_UTC11.png",
-                         "Monthly Clear Sky Index (2015-2025, 11:00 UTC)", 
-                         "Mean Clear Sky Index", 
-                         "Distribution of Pixel Values for Monthly Clear Sky Index (11:00 UTC)", 
-                         value_ranges=[0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9], 
-                         value_colors=["darkblue", "blue", "teal", "green",
-                                       "lime", "greenyellow", "yellow", "gold", "orange", "darkorange"]) 
-    """
-    plot_ghi_for_timestep(ghi_file=ghi_maps_filepath, ind=3, outdir="output")
+    value_ranges=[0.0, 0.2, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0]
+    value_colors=["indigo", "purple", "darkviolet", "darkslateblue", "blue", "cornflowerblue", "mediumturquoise", "mediumspringgreen", 
+                  "springgreen", "lime", "greenyellow", "yellow", "gold", "orange", "darkorange", "red"]
+
+    cmap = ListedColormap(value_colors)
+    #norm = BoundaryNorm(value_ranges, ncolors=cmap.N, clip=True)
+    plot_seasonal_comparison_maps(monthly_longterm_sim_results, ["mixed_sky_ghi", "all_sky_ghi"], 
+                                  ["Mixed", "All-Sky"], 
+                                  ["month_mixed_count", "month_all_sky_count"], 
+                                  outpath= "output/longterm_sim_monthly_maps_mixed_vs_all-sky.png",
+                         title="Daily Mean GHI [kW/m²] per Month (N = 5000)", 
+                         colorbar_label="Daily Mean GHI [kW/m²]", 
+                         histogram_title="Distribution of Pixel Values for Daily Mean GHI [kW/m²] (5000 Simulation Years)", 
+                         cmap=cmap) 
+    
+    #plot_ghi_for_timestep(ghi_file=ghi_maps_filepath, ind=3, outdir="output")
     """ plot_monthly_results(monthly_ghi_maps, "I_total", "output/monthly_irradiance_UTC11.png",
                          "Monthly Surface Irradiance (2015-2025, 11:00 UTC)", 
                          "Mean Total Irradiance [W/m²]", 

@@ -2,7 +2,10 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from src.plotting import set_paper_style, SKY_TYPE_COLORS
+from src.model.longterm_GHI_simulation import sample_dirichlet
 
+set_paper_style()
 
 # ============================================================
 # Helper function: plot histogram for a subset with mean & sd
@@ -68,19 +71,72 @@ def plot_histograms_by_month_and_sky(df, outpath="output/clear_sky_index_histogr
     print(f"Saved histogram to {outpath}.")
 
 
+def plot_uncertainty_stacked(samples_by_month, outpath="output/sky_type_probabilities_stacked_uncertainty.png"):
+    months = sorted(samples_by_month.keys())
+
+    clear_mean, mixed_mean, over_mean = [], [], []
+    clear_sd, mixed_sd, over_sd = [], [], []
+
+    for m in months:
+        draws = samples_by_month[m]
+        clear_mean.append(draws[:,0].mean())
+        mixed_mean.append(draws[:,1].mean())
+        over_mean.append(draws[:,2].mean())
+
+        clear_sd.append(draws[:,0].std())
+        mixed_sd.append(draws[:,1].std())
+        over_sd.append(draws[:,2].std())
+
+    # Start building the stacked barplot
+    x = np.arange(len(months))
+
+    plt.figure(figsize=(12,6))
+
+    # Clear (bottom layer)
+    plt.bar(x, clear_mean, 
+            yerr=clear_sd, capsize=3, 
+            label="Clear", color=SKY_TYPE_COLORS["clear"])
+
+    # Mixed (shifted up by clear mean)
+    plt.bar(x, mixed_mean, bottom=clear_mean,
+            yerr=mixed_sd, capsize=3, 
+            label="Mixed", color=SKY_TYPE_COLORS["mixed"])
+
+    # Overcast (shifted up by clear+mixed means)
+    bottom_for_over = np.array(clear_mean) + np.array(mixed_mean)
+    plt.bar(x, over_mean, bottom=bottom_for_over,
+            yerr=over_sd, capsize=3,
+            label="Overcast", color=SKY_TYPE_COLORS["overcast"])
+
+    plt.xticks(x, months)
+    plt.xlabel("Month")
+    plt.ylabel("Posterior Probability (mean ± sd)")
+    plt.title("Posterior Uncertainty of Monthly Sky Type Probabilities (Dirichlet)")
+    plt.legend(loc="center right", bbox_to_anchor=(1.2, 0.5))  
+    plt.tight_layout()
+    plt.savefig(outpath)
+    print(f"Saved Stacked Uncertainty Sky Type Probability plot to {outpath}.")
+    
+
+
 # ============================================================
 # MAIN
 # ============================================================
 if __name__ == "__main__":
     area_mean_k_path = "data/processed/area_mean_clear_sky_index_per_obs.csv"
-    df = pd.read_csv(area_mean_k_path)
+    monthly_sky_type_counts_filepath = "data/processed/monthly_sky_type_counts.csv"
+
+    #df = pd.read_csv(area_mean_k_path)
 
     # Ensure correct types if needed
-    df["date"] = pd.to_datetime(df["date"])
-    df["month"] = df["month"].astype(int)
+    #df["date"] = pd.to_datetime(df["date"])
+    #df["month"] = df["month"].astype(int)
 
-    print("=== Plotting per sky type ===")
-    plot_histograms_by_sky_type(df)
+    #print("=== Plotting per sky type ===")
+    #plot_histograms_by_sky_type(df)
 
-    print("\n=== Plotting per month and sky type ===")
-    plot_histograms_by_month_and_sky(df)
+    #print("\n=== Plotting per month and sky type ===")
+    #plot_histograms_by_month_and_sky(df)
+
+    samples_by_month = sample_dirichlet(monthly_sky_type_counts_filepath, 5000)
+    plot_uncertainty_stacked(samples_by_month)

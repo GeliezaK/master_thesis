@@ -4,15 +4,13 @@ import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 from statsmodels.stats.diagnostic import het_white
-import pvlib
-from pvlib.location import Location
 from scipy.stats import linregress
 from sklearn.metrics import r2_score
 from sklearn.linear_model import TheilSenRegressor
-from src.model import CENTER_LAT, CENTER_LON, MIXED_THRESHOLD, OVERCAST_THRESHOLD, COARSE_RESOLUTIONS
-from src.model.surface_GHI_model import get_closest_lut_entry
+from src.model import MIXED_THRESHOLD, OVERCAST_THRESHOLD, COARSE_RESOLUTIONS
 from src.plotting import SIMULATION_COLOR, SIMULATION_LS, SIMULATION_M, OBSERVATION_COLOR, OBSERVATION_LS, OBSERVATION_M
 from src.plotting import SKY_TYPE_COLORS, STATION_COLORS, set_paper_style
+from src.preprocessing.clean_stations_data import flag_observations
 
 set_paper_style()
 
@@ -136,138 +134,6 @@ def lineplot_doy(x, y1, y2=None, xlabel="DOY", ylabel="", title="",
     plt.savefig(outpath)
     print(f"Saved lineplot to {outpath}.")
     
-
-def get_toa_irradiance(lat, lon, datetime):
-    """Get extraterrestrial (top of atmosphere) irradiance [W/m²] for given lat/lon/time"""
-    site = Location(lat, lon, 'Europe/Oslo', 12, 'Bergen')
-    solpos = site.get_solarposition(datetime)
-
-    # Extra-terrestrial radiation normal to sun
-    I0_normal = pvlib.irradiance.get_extra_radiation(datetime.dayofyear)
-
-    # Project onto horizontal plane
-    I0_horizontal = I0_normal * np.maximum(0, np.sin(np.radians(solpos['apparent_elevation'])))
-
-    return I0_horizontal.values[0]
-
-def flag_observations(sim_vs_obs, lut_path):
-    # Get theoretical maximum irradiance 
-    sim_vs_obs["datetime"] = pd.to_datetime(
-        sim_vs_obs["system:time_start_large"], unit="ms", utc=True
-    )
-    
-    sim_vs_obs["TOA_irradiance"] = sim_vs_obs.apply(
-        lambda row: get_toa_irradiance(CENTER_LAT, CENTER_LON, row["datetime"]),
-        axis=1
-    )
-    
-    # Set default flag "OK", then "T" if irradiance larger than Top of Atmosphere irradiance
-    sim_vs_obs["Flesland_flag"] = np.where(
-        sim_vs_obs["Flesland_ghi_1M"] > sim_vs_obs["TOA_irradiance"], "T", "OK"
-    )
-
-    sim_vs_obs["Florida_flag"] = np.where(
-        sim_vs_obs["Florida_ghi_1M"] > sim_vs_obs["TOA_irradiance"], "T", "OK"
-    )
-
-    # Count how many "T" flags per station
-    print("Flesland flagged:", (sim_vs_obs["Flesland_flag"] == "T").sum())
-    print("Florida flagged:", (sim_vs_obs["Florida_flag"] == "T").sum())
-    
-    # Update Flesland_flag to "N" if Flesland_ghi_1M < 0
-    sim_vs_obs["Flesland_flag"] = np.where(
-        sim_vs_obs["Flesland_ghi_1M"] < 0, "N", sim_vs_obs["Flesland_flag"]
-    )
-
-    # Update Florida_flag to "N" if Florida_ghi_1M < 0
-    sim_vs_obs["Florida_flag"] = np.where(
-        sim_vs_obs["Florida_ghi_1M"] < 0, "N", sim_vs_obs["Florida_flag"]
-    )
-
-    # Count how many "N" flags per station
-    print("Flesland negative flagged:", (sim_vs_obs["Flesland_flag"] == "N").sum())
-    print("Florida negative flagged:", (sim_vs_obs["Florida_flag"] == "N").sum())
-    
-    # Now flag any values that are Remove data with GHI > f ∗ ICS + a, where
-    # f = 2, a = 0 if ICS ≤ 100 W /m2
-    # f = 1.05, a = 95 if ICS > 100 W /m
-    # Get clear-sky value from lut 
-    # Compute DOY and hour from datetime
-    sim_vs_obs["doy"] = sim_vs_obs["datetime"].dt.dayofyear
-    sim_vs_obs["hour"] = sim_vs_obs["datetime"].dt.hour + sim_vs_obs["datetime"].dt.minute / 60.0
-
-    # Define constants
-    altitude_km = 0.08
-    surface_albedo = sim_vs_obs["blue_sky_albedo_median"].mean()
-
-    # Read LUT
-    lut = pd.read_csv(lut_path) 
-    variables = ["doy", "hour", "albedo", "altitude_km", "cloud_top_km", "cot", "cloud_phase"] 
-    unique_values = {var: lut[var].unique() for var in variables if var in lut.columns}
-    print(f"Lut unique values: {unique_values}")
-    
-    # Function to get clear sky GHI (direct + diffuse)
-    def get_clear_sky_ghi(row):
-        res = get_closest_lut_entry(
-            lut=lut,
-            unique_values=unique_values,
-            doy=row["doy"],
-            hour=row["hour"],
-            albedo=surface_albedo,
-            altitude_km=altitude_km,
-            cloud_top_km=None,  # clear sky
-            cot=None,
-            cloud_phase=None
-        )
-        # Return sum of direct + diffuse
-        if res["direct_clear"] is None or res["diffuse_clear"] is None:
-            return np.nan
-        return res["direct_clear"] + res["diffuse_clear"]
-    
-    # Apply to each row 
-    sim_vs_obs["clear_sky"] = sim_vs_obs.apply(get_clear_sky_ghi, axis=1)
-    print(sim_vs_obs[["datetime", "sky_type", "clear_sky"]].head())
-    print(sim_vs_obs[["clear_sky"]].describe())
-    
-    # Define a function to compute the threshold for a given ICS value
-    def threshold(ics):
-        if ics <= 100:
-            return 2 * ics + 0
-        else:
-            return 1.05 * ics + 95
-
-    # Apply the threshold to Flesland
-    sim_vs_obs["Flesland_flag"] = np.where(
-        sim_vs_obs["Flesland_ghi_1M"] > sim_vs_obs["clear_sky"].apply(threshold),
-        "CS",
-        sim_vs_obs["Flesland_flag"]
-    )
-
-    # Apply the threshold to Florida
-    sim_vs_obs["Florida_flag"] = np.where(
-        sim_vs_obs["Florida_ghi_1M"] > sim_vs_obs["clear_sky"].apply(threshold),
-        "CS",
-        sim_vs_obs["Florida_flag"]
-    )
-
-    # Print counts of "CS" flag per station
-    print("Flesland CS flagged:", (sim_vs_obs["Flesland_flag"] == "CS").sum())
-    print("Florida CS flagged:", (sim_vs_obs["Florida_flag"] == "CS").sum())
-    
-    # Print number of missing and total values for GHI columns
-    for col in ["Florida_ghi_1M", "Flesland_ghi_1M"]:
-        n_missing = sim_vs_obs[col].isna().sum()
-        n_total = len(sim_vs_obs[col])
-        print(f"{col}: missing = {n_missing}, total = {n_total}")
-    
-    n_valid_florida = sim_vs_obs.loc[sim_vs_obs["Florida_flag"] == "OK", "Florida_ghi_1M"].notna().sum()    
-    n_valid_flesland = sim_vs_obs.loc[sim_vs_obs["Flesland_flag"] == "OK", "Flesland_ghi_1M"].notna().sum()    
-
-    print(f"Valid obs for Florida: {n_valid_florida}")
-    print(f"Valid obs for Flesland: {n_valid_flesland}")
-
-    return sim_vs_obs
-
 
 def compute_error_model_tian2016(x, y):
     # Align data
@@ -829,7 +695,13 @@ def main():
     #print_sky_type_percentages(sim_vs_obs)
     
     # ------------------------------ Exclude outliers and missing data -----------------------
-    sim_vs_obs = flag_observations(sim_vs_obs, lut_path)
+    sim_vs_obs["datetime"] = pd.to_datetime(
+        sim_vs_obs["system:time_start_large"], unit="ms", utc=True
+    )
+    sim_vs_obs = flag_observations(sim_vs_obs, obs_col="Florida_ghi_1M", datetime_col="datetime")
+    sim_vs_obs = flag_observations(sim_vs_obs, obs_col="Flesland_ghi_1M", datetime_col="datetime")
+    
+    print(list(sim_vs_obs))
     
     # Make new subset 
     # Copy subset without modifying the original
@@ -841,18 +713,18 @@ def main():
 
     # Overwrite GHI values with NaN where flag is not OK
     sim_vs_obs_sub["Flesland_ghi_1M"] = np.where(
-        sim_vs_obs["Flesland_flag"] != "OK", 
+        sim_vs_obs["Flesland_ghi_1M_flag"] != "OK", 
         np.nan, 
         sim_vs_obs_sub["Flesland_ghi_1M"]
     )
 
     sim_vs_obs_sub["Florida_ghi_1M"] = np.where(
-        sim_vs_obs["Florida_flag"] != "OK", 
+        sim_vs_obs["Florida_ghi_1M_flag"] != "OK", 
         np.nan, 
         sim_vs_obs_sub["Florida_ghi_1M"]
     )
     
-    
+    """
     # ---------------------- Log Transformation ---------------------------
     # Transform everything to log because of non-Gaussian distribution 
     cols_to_check = [
@@ -1097,7 +969,7 @@ def main():
         outpath="output/scatter_florida_sim_florida_obs_log_with_sky_type.png",
         sky_type=sim_vs_obs_sub["sky_type"]
     )
-    """
+    
     # Plot scatter Florida sim - Florida sim
     scatter_with_fit(
         sim_vs_obs_sub["florida_ghi_sim_horizontal_log"].values,

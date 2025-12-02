@@ -19,8 +19,8 @@ stations = {
 }
 
 # Parameters
-element = 'mean(surface_downwelling_shortwave_flux_in_air PT1M)'
-resolution = 'PT1M'
+element = 'mean(surface_downwelling_shortwave_flux_in_air PT1H)' # mean(surface_downwelling_shortwave_flux_in_air PT1M) for minute-resolution
+resolution = 'PT1H' # PT1M for minute-resolution
 start_date_flesland = '2015-08-03' # First obs in flesland
 start_date_florida_1 = '2016-02-11'
 end_date_florida_1 = '2025-01-31'
@@ -57,7 +57,7 @@ def filter_utc_window(df):
               ((df['hour'] == 11) & (df['minute'] < 30))].copy()
 
 
-def download_monthly_data(station_id, start_dt, end_dt):
+def download_monthly_data(station_id, start_dt, end_dt, filter_11UTC=True):
     """Download data for one station in monthly chunks"""
     all_data = []
     station_name = stations[station_id]
@@ -128,7 +128,10 @@ def download_monthly_data(station_id, start_dt, end_dt):
                 df['value'] = None
 
         # Filter timestamps by UTC time 10:30-11:30
-        df_filtered = filter_utc_window(df)
+        if filter_11UTC:
+            df_filtered = filter_utc_window(df)
+        else : 
+            df_filtered = df
         
         # Add station column
         df_filtered['station'] = station_name
@@ -136,7 +139,7 @@ def download_monthly_data(station_id, start_dt, end_dt):
         
         # Select relevant columns
         df_filtered = df_filtered[['timestamp', 'value', 'station', 'station_id']]
-        
+                
         all_data.append(df_filtered)
 
     if all_data:
@@ -164,23 +167,25 @@ def main():
     all_stations_data = []
 
     # Flesland full range
-    df_flesland = download_monthly_data('SN50500', start_dt_flesland, end_dt)
+    df_flesland = download_monthly_data('SN50500', start_dt_flesland, end_dt, filter_11UTC=False)
     all_stations_data.append(df_flesland)
 
     # Florida until 2025-01-31
-    df_florida_1 = download_monthly_data('SN50539', start_dt_florida_1, end_dt_florida_1)
+    df_florida_1 = download_monthly_data('SN50539', start_dt_florida_1, end_dt_florida_1, filter_11UTC=False)
     all_stations_data.append(df_florida_1)
 
     # Florida from 2025-01-21 onward
-    df_florida_2 = download_monthly_data('SN50540', start_dt_florida_2, end_dt)
+    df_florida_2 = download_monthly_data('SN50540', start_dt_florida_2, end_dt, filter_11UTC=False)
     all_stations_data.append(df_florida_2)
 
     # Combine
     df_all = pd.concat(all_stations_data, ignore_index=True)
 
     # Save to CSV
-    outpath = f'data/processed/frost_ghi_1M_Flesland_Florida_10:30-11:30UTC.csv'
+    outpath = f'data/raw/frost_ghi_1H_Flesland_Florida_2015-2025.csv'
     df_all.to_csv(outpath, index=False)
+    print(df_all.head())
+    print(df_all.describe())
     print(f"Saved filtered data to {outpath}.")
 
 

@@ -14,7 +14,7 @@ import pandas as pd
 from time import time
 import matplotlib.pyplot as plt
 from src.plotting.high_res_maps import plot_single_band
-from src.model.surface_GHI_model import get_cloud_properties
+from model.instantaneous_GHI_model import get_cloud_properties
 from src.model import CENTER_LAT, CENTER_LON, BBOX, MIXED_THRESHOLD, OVERCAST_THRESHOLD, COARSE_RESOLUTIONS
 
 R_EARTH = 6371000
