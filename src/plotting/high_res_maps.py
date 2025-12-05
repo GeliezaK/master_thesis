@@ -939,17 +939,4 @@ def plot_single_band_histogram(band, outpath, title, xlabel, ylabel):
     plt.savefig(hist_outpath)
     print(f"Tif pixel value histogram saved to {hist_outpath}.")
 
-
-if __name__=="__main__": 
-    #plot_alltime_cloud_cover("data/processed/Cloud_mask_mean_alltime_mixed.tif", "output/cloud_mask_mean_alltime_mixed.png")
-    
-    plot_single_tif("data/raw/S2_testfiles/S2_cloud_2018-08-05.tif", 
-                    "output/s2_2018-08-05.png", 
-                    "Cloud Mask", 
-                    "Cloud (binary)") 
-    plot_single_tif_histogram("data/raw/S2_testfiles/S2_cloud_2018-07-28.tif", 
-                              "output/s2_2018-07-28_hist.png", 
-                              "Histogramm of pixel values", 
-                              "Pixel value",
-                              "Frequency")
     

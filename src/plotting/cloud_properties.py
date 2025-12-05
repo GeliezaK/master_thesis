@@ -1,12 +1,6 @@
 import matplotlib.pyplot as plt 
 import pandas as pd
-import numpy as np
-import imageio
-import xarray as xr
 import statsmodels.api as sm
-from datetime import datetime, timedelta, timezone
-from src.model import BBOX
-from src.plotting.high_res_maps import plot_single_band
 from src.plotting import CLOUD_PROP_COLORS, DEFAULT_ALPHA, set_paper_style
 from src.model.generate_LUT import COT, CLOUD_TOP_HEIGHT, CLOUD_GEOGRAPHICAL_THICKNESS
 

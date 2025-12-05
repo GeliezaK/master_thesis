@@ -148,9 +148,9 @@ if __name__ == "__main__":
                                   ["Mixed", "All-Sky"], 
                                   ["month_mixed_count", "month_all_sky_count"], 
                                   outpath= "output/longterm_sim_monthly_maps_mixed_vs_all-sky.png",
-                         title="Daily Mean GHI [kW/m²] per Month (N = 5000)", 
-                         colorbar_label="Daily Mean GHI [kW/m²]", 
-                         histogram_title="Distribution of Pixel Values for Daily Mean GHI [kW/m²] (5000 Simulation Years)", 
+                         title="Mean Daily Irradiation [kWh/m²] per Month (N = 5000)", 
+                         colorbar_label="Mean Daily Irradiation [kWh/m²]", 
+                         histogram_title="Distribution of Pixel Values for Mean Daily Irradiation [kWh/m²] (N = 5000)", 
                          cmap=cmap) 
     
     #plot_ghi_for_timestep(ghi_file=ghi_maps_filepath, ind=3, outdir="output")

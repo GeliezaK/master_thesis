@@ -51,12 +51,7 @@ def summarize_dsm(dsm_filepath):
 
 if __name__ == "__main__":
     dsm_filepath = "data/processed/bergen_dsm_10m_epsg4326.tif"
-    """ plot_map_with_elevation(
-        dsm_filepath,
-        "data/coastline_bergen.geojson",
-        "data/roads_primary.geojson",
-        "data/building_footprints_bergen.geojson"
-    ) """
+
     cmap = plt.cm.terrain
     norm = Normalize(vmin=0, vmax=800)  # meters
     landmarks = {

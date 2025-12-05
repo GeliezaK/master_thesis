@@ -357,13 +357,13 @@ def spatially_resolved_model(longterm_sim_results_spatially_uniform_filepath, cl
     })
 
     out_ds["mixed_sky_ghi"].attrs.update({
-        "units": "Wh m-2",
+        "units": "kWh m-2",
         "long_name": "Spatially resolved daily GHI for mixed-sky conditions",
         "description": "Mean mixed-sky GHI multiplied by normalized clear-sky index map"
     })
 
     out_ds["all_sky_ghi"].attrs.update({
-        "units": "Wh m-2",
+        "units": "kWh m-2",
         "long_name": "Spatially resolved daily GHI for all-sky conditions",
         "description": "Weighted combination of mixed, clear, and overcast GHI using spatial pattern from mixed sky"
     })

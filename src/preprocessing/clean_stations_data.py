@@ -2,7 +2,7 @@ import pvlib
 from pvlib.location import Location
 import pandas as pd 
 import numpy as np
-from src.model.instantaneous_GHI_model import GHI_CLEAR_LUT
+from src.model.instantaneous_GHI_model import build_ghi_clear_lut
 from src.model import CENTER_LAT, CENTER_LON
 
 
@@ -72,6 +72,7 @@ def flag_observations(df_in, obs_col, datetime_col="datetime"):
     # -----------------------------------------
     # Lookup clear-sky GHI from LUT
     # -----------------------------------------
+    GHI_CLEAR_LUT = build_ghi_clear_lut()
     doy_idx = df["doy"].astype(int) - 1
     hour_idx = df["hour_int"].astype(int)
     df["ICS"] = GHI_CLEAR_LUT[doy_idx, hour_idx]
