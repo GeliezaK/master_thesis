@@ -52,7 +52,7 @@ def merge_by_closest_timestamp(obs_table_path, frost_table_path):
     return obs_table
 
 
-def extract_pixel_by_location(nc_filepath, pixel_lat, pixel_lon, var_name="GHI_total"): 
+def extract_pixel_by_location(nc_filepath, pixel_lat, pixel_lon, var_name="GHI_total", time_name="time"): 
     """Return the time series for a pixel given its location from a .nc file with dimensions [time, lat, lon]."""
     # Open your NetCDF file
     nc = Dataset(nc_filepath)
@@ -68,13 +68,13 @@ def extract_pixel_by_location(nc_filepath, pixel_lat, pixel_lon, var_name="GHI_t
     print(f"Pixel ilat: {ilat}, lat: {lats[ilat]}; ilon: {ilon}, lon: {lons[ilon]}")
     
     # Extract time dimension
-    time_var = nc.variables["time"]
-    times = num2date(time_var[:], units=time_var.units, calendar=time_var.calendar)
+    time_var = nc.variables[time_name]
+    #times = num2date(time_var[:], units=time_var.units, calendar=time_var.calendar)
 
     # Extract pixel values
     var_timeseries = var[:, ilat, ilon]
     nc.close()
-    return times, var_timeseries
+    return time_var, var_timeseries
     
 def convert_cftime_to_datetime(val):
     if isinstance(val, DatetimeGregorian):

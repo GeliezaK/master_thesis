@@ -571,7 +571,116 @@ def spatially_resolved_simulation_timeseries(
 
     return pd.DataFrame(results)
 
-    
+
+def spatially_resolved_simulation_daily(
+        simulation_results_csv,
+        clear_sky_index_monthly_filepath,
+        verbose=False
+    ):
+    """
+    Daily spatially-resolved model:
+      - Uses 12 monthly k-maps
+      - Computes Florida/Flesland GHI for each simulation day
+      - Appends: year, month, doy, sky_type, sum & mean values
+    """
+
+    # ----------------------------------------------------------
+    # Load simulation dataframe
+    # ----------------------------------------------------------
+    df = pd.read_csv(simulation_results_csv)
+    df["GHI_daily_kWh"] = df["GHI_daily_Wh"] / 1000
+
+    # Group by year for fast access
+    grouped_year = df.groupby("year")
+
+    # ----------------------------------------------------------
+    # Load k-maps dataset (12 × lat × lon)
+    # ----------------------------------------------------------
+    ds = xr.open_dataset(clear_sky_index_monthly_filepath)
+    lat = ds["lat"].values
+    lon = ds["lon"].values
+    k_monthly = ds["clear_sky_index"].values
+
+    # ----------------------------------------------------------
+    # Locate stations
+    # ----------------------------------------------------------
+    Florida_ilat = np.abs(lat - FLORIDA_LAT).argmin()
+    Florida_ilon = np.abs(lon - FLORIDA_LON).argmin()
+    Flesland_ilat = np.abs(lat - FLESLAND_LAT).argmin()
+    Flesland_ilon = np.abs(lon - FLESLAND_LON).argmin()
+
+    if verbose:
+        print(f"Florida pixel:  ({Florida_ilat}, {Florida_ilon})")
+        print(f"Flesland pixel: ({Flesland_ilat}, {Flesland_ilon})")
+
+    # ----------------------------------------------------------
+    # Precompute normalized k values for each month and station
+    # ----------------------------------------------------------
+    k_station = np.zeros((12, 2))  # month index 0..11, station 0=Florida, 1=Flesland
+
+    for m in range(12):
+        k_map = k_monthly[m]
+        k_norm = k_map / k_map.mean()
+
+        k_station[m, 0] = float(k_norm[Florida_ilat, Florida_ilon])
+        k_station[m, 1] = float(k_norm[Flesland_ilat, Flesland_ilon])
+
+    # ----------------------------------------------------------
+    # Prepare result list
+    # ----------------------------------------------------------
+    years = sorted(df["year"].unique())
+    pbar = tqdm(total=12 * len(years), desc="Processing daily (spatial model)")
+
+    results = []
+
+    # ----------------------------------------------------------
+    # MONTH → YEAR → vectorized daily scaling
+    # ----------------------------------------------------------
+    for month in range(1, 13):
+
+        # Month-specific k-factors
+        kF = k_station[month - 1, 0]
+        kS = k_station[month - 1, 1]
+
+        for year in years:
+
+            pbar.update(1)
+
+            if year not in grouped_year.groups:
+                continue
+
+            df_month = grouped_year.get_group(year)
+            df_month = df_month[df_month["month"] == month]
+
+            if df_month.empty:
+                continue
+
+            # Boolean mask for mixed / not mixed
+            is_mixed = df_month["sky_type"] == "mixed"
+
+            # Select daily GHI values (vector)
+            ghi = df_month["GHI_daily_Wh"].values
+
+            # Vectorized sums
+            florida_daily_mean = np.where(is_mixed, ghi * kF, ghi)
+            flesland_daily_mean = np.where(is_mixed, ghi * kS, ghi)
+
+            # Build output (still need a loop but only over rows of a dict list)
+            df_out = pd.DataFrame({
+                "year": df_month["year"].values,
+                "month": df_month["month"].values,
+                "doy": df_month["doy"].values,
+                "sky_type": df_month["sky_type"].values,
+                "Florida_GHI_daily_Wh_mean": florida_daily_mean,
+                "Flesland_GHI_daily_Wh_mean": flesland_daily_mean
+            })
+
+            results.append(df_out)
+
+    pbar.close()
+    return pd.concat(results, ignore_index=True)
+
+
     
 def describe_resuts(results): 
     print(results.head())
@@ -637,10 +746,10 @@ if __name__ == "__main__":
     # ---------------------------------------------------------
     # Florida Flesland pixels monthly timeseries
     # --------------------------------------------------------
-    results_df = spatially_resolved_simulation_timeseries(outpath, 
+    results_df = spatially_resolved_simulation_daily(outpath, 
                                                           clear_sky_index_monthly_mixed_sky_filepath, 
                                                           verbose = True)
-    outpath_fl_fs_monthly = f"data/processed/longterm_sim_Florida_Flesland_monthly_pixels_{n_years}_k={model}.csv"
+    outpath_fl_fs_monthly = f"data/processed/longterm_sim_Florida_Flesland_daily_pixels_{n_years}_k={model}.csv"
     results_df.to_csv(outpath_fl_fs_monthly, index=False)
 
     
