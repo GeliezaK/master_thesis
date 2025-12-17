@@ -1,4 +1,9 @@
-# Download 1M resolution GHI data from florida and flesland via Frost API 
+# ===================================================================================================
+# Download 1M and 1H resolution GHI data from Florida and Flesland weather stations via Frost API 
+# ===================================================================================================
+# This script accesses the Norwegian Meteorological Institute Frost API.
+# Users must register for a personal client ID at https://frost.met.no/
+# and authenticate via HTTP basic auth (client ID as username, empty password).
 
 
 import requests
@@ -9,20 +14,22 @@ from tqdm import tqdm
 
 
 # Your Frost API client ID
-CLIENT_ID = 'f8cf8726-6617-4696-90a4-5b89a668073a'
+# The Frost API client ID must be obtained individually from https://frost.met.no/
+# and provided directly in the script.
+CLIENT_ID = "your-frost-api-client-id" # set by user
 
-# Station IDs and names mapping
+# Station IDs as defined by MET Norway (public metadata)
 stations = {
     'SN50539': "Florida",
     'SN50500': 'Flesland',
-    'SN50540' : "Florida",
+    'SN50540' : "Florida", # since 2025-01-21
 }
 
 # Parameters
 element = 'mean(surface_downwelling_shortwave_flux_in_air PT1H)' # mean(surface_downwelling_shortwave_flux_in_air PT1M) for minute-resolution
 resolution = 'PT1H' # PT1M for minute-resolution
 start_date_flesland = '2015-08-03' # First obs in flesland
-start_date_florida_1 = '2016-02-11'
+start_date_florida_1 = '2016-02-11' # First obs in florida
 end_date_florida_1 = '2025-01-31'
 start_date_florida_2 = '2025-01-21'
 end_date = '2025-08-31'
@@ -34,7 +41,8 @@ bergen_tz = pytz.timezone('Europe/Oslo')
 BASE_URL = 'https://frost.met.no/observations/v0.jsonld'
 
 def daterange(start_dt, end_dt):
-    """Generate first day of each month between start_dt and end_dt"""
+    """Generate first day of each month between start_dt and end_dt."""
+        
     current = start_dt.replace(day=1)
     while current <= end_dt:
         yield current
@@ -45,12 +53,13 @@ def daterange(start_dt, end_dt):
             current = current.replace(month=current.month+1)
             
 def get_value(obs_list):
+    "Extract 'value' numerical value from Frost API observations list. 'value' represents the measured GHI."
     if isinstance(obs_list, list) and len(obs_list) > 0 and isinstance(obs_list[0], dict):
         return obs_list[0].get('value')
     return None
 
 def filter_utc_window(df):
-    """Keep only times between 10:30 and 11:30 UTC"""
+    """Keep only times between 10:30 and 11:30 UTC."""
     df['hour'] = df['timestamp'].dt.hour
     df['minute'] = df['timestamp'].dt.minute
     return df[((df['hour'] == 10) & (df['minute'] >= 30)) |
@@ -58,7 +67,41 @@ def filter_utc_window(df):
 
 
 def download_monthly_data(station_id, start_dt, end_dt, filter_11UTC=True):
-    """Download data for one station in monthly chunks"""
+    """
+    Download and preprocess Frost API data for a single station in monthly batches.
+
+    This function queries the Norwegian Meteorological Institute Frost API
+    for a given station id and time range, downloads the data month by month,
+    extracts the relevant observation values, applies optional time filtering,
+    and returns the result as a single pandas DataFrame.
+
+    Parameters
+    ----------
+    station_id : str
+        Frost API station identifier (e.g. 'SN50500').
+    start_dt : datetime.datetime
+        Start datetime (UTC) of the requested data period.
+    end_dt : datetime.datetime
+        End datetime (UTC) of the requested data period.
+    filter_11UTC : bool, optional
+        If True, restricts observations to the 10:30–11:30 UTC time window
+        using filter_utc_window. Default is True. Use this option for one-minute resolution
+        to avoid downloading large amounts of data.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A DataFrame containing the downloaded observations with the following
+        columns:
+        - timestamp : datetime64[ns], observation time (UTC)
+        - value     : float, observed GHI value
+        - station   : str, station name
+        - station_id: str, station identifier
+
+        If no data are available, an empty DataFrame with the above columns
+        is returned.
+    """
+    
     all_data = []
     station_name = stations[station_id]
     for month_start in tqdm(daterange(start_dt, end_dt), desc=f"Downloading from {station_id}..."):
