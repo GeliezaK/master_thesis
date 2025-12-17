@@ -4,8 +4,8 @@ import numpy as np
 import calendar
 import statsmodels.api as sm
 from scipy.stats import wasserstein_distance
-from src.preprocessing.clean_stations_data import flag_observations
-from src.preprocessing.validation_with_stations_data import extract_pixel_by_location
+from preprocessing.quality_control_flag_stations_data import flag_observations
+from preprocessing.merge_station_obs_with_sim import extract_pixel_by_location
 from src.plotting import STATION_COLORS, set_paper_style, SKY_TYPE_COLORS
 
 set_paper_style()

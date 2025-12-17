@@ -1,6 +1,11 @@
+# =============================================================================
+# This script provides functions to apply the quality control criteria by 
+# Grini (2015), https://hdl.handle.net/11250/292854 to 1M and 1H mean GHI
+# measurements from Florida and Flesland weather stations 
+# =============================================================================
+
 import pvlib 
 from pvlib.location import Location
-import pandas as pd 
 import numpy as np
 from src.model.instantaneous_GHI_model import build_ghi_clear_lut
 from src.model import CENTER_LAT, CENTER_LON
@@ -8,7 +13,7 @@ from src.model import CENTER_LAT, CENTER_LON
 
 
 def get_toa_irradiance(lat, lon, datetime):
-    """Get extraterrestrial (top of atmosphere) irradiance [W/m²] for given lat/lon/time"""
+    """Get extraterrestrial (top of atmosphere) irradiance [W/m²] for given lat/lon/datetime."""
     site = Location(lat, lon, 'Europe/Oslo', 12, 'Bergen')
     solpos = site.get_solarposition(datetime)
 
@@ -24,6 +29,7 @@ def get_toa_irradiance(lat, lon, datetime):
 # Helper: threshold for clear-sky exceeding test
 # ---------------------------------------------------------
 def cs_threshold(ics):
+    """Return clear-sky threshold for a given array of clear sky irradiances."""
     # Apply threshold to remove GHI > f ∗ ICS + a, where
     # f = 2, a = 0 if ICS ≤ 100 W /m2
     # f = 1.05, a = 95 if ICS > 100 W /m
@@ -34,16 +40,19 @@ def cs_threshold(ics):
     high = ~low
 
     # Allocate output
-    out = np.empty_like(ics, dtype=float)
+    threshholds = np.empty_like(ics, dtype=float)
 
     # Apply formulas
-    out[low] = 2 * ics[low]
-    out[high] = 1.05 * ics[high] + 95
+    threshholds[low] = 2 * ics[low]
+    threshholds[high] = 1.05 * ics[high] + 95
 
-    return out
+    return threshholds
 
 
 def flag_observations(df_in, obs_col, datetime_col="datetime"):
+    """Create a flag column in df_in to flag data according to quality control criteria in Grini (2015).
+    Prints the number of observations for each flag.
+    Return dataframe df_in including flag column."""
     # Make subset copy
     df = df_in[[obs_col, datetime_col]].copy()
     
@@ -54,10 +63,9 @@ def flag_observations(df_in, obs_col, datetime_col="datetime"):
         CENTER_LON
     )
 
+    # Add helper column with TOA radiation (top-of-atmosphere/extraterrestrial)
     elev = np.radians(solpos["apparent_elevation"])
-    
     I0_normal = pvlib.irradiance.get_extra_radiation(df[datetime_col].dt.dayofyear)
-
     df["TOA"] = I0_normal * np.maximum(0, np.sin(elev.to_numpy()))
 
     # -----------------------------------------

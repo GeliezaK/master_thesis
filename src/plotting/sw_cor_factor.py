@@ -8,7 +8,7 @@ import matplotlib.gridspec as gridspec
 import matplotlib.colors as colors
 from datetime import datetime, timezone, timedelta
 from src.model.cloud_shadow import get_solar_angle
-from src.preprocessing.validation_with_stations_data import extract_pixel_by_location, convert_cftime_to_datetime
+from preprocessing.merge_station_obs_with_sim import extract_pixel_by_location, convert_cftime_to_datetime
 
 def plot_sw_cor_for_timestep(sw_cor_file, elevation_file, ind=10):
     """Plot elevation the shortwave correction factor for a specific timestep"""

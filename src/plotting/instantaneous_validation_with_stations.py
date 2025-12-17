@@ -10,7 +10,7 @@ from sklearn.linear_model import TheilSenRegressor
 from src.model import MIXED_THRESHOLD, OVERCAST_THRESHOLD, COARSE_RESOLUTIONS
 from src.plotting import SIMULATION_COLOR, SIMULATION_LS, SIMULATION_M, OBSERVATION_COLOR, OBSERVATION_LS, OBSERVATION_M
 from src.plotting import SKY_TYPE_COLORS, STATION_COLORS, set_paper_style
-from src.preprocessing.clean_stations_data import flag_observations
+from preprocessing.quality_control_flag_stations_data import flag_observations
 
 set_paper_style()
 

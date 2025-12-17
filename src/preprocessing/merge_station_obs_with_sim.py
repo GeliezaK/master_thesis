@@ -1,8 +1,12 @@
+# ===================================================================================
+# This script contains functions to pair station observations with simulated data 
+# ===================================================================================
+
 import pandas as pd
 import numpy as np
 from netCDF4 import Dataset, num2date
 from cftime import DatetimeGregorian
-from src.model import COARSE_RESOLUTIONS
+from src.model import COARSE_RESOLUTIONS, FLESLAND_LAT, FLESLAND_LON, FLORIDA_LAT, FLORIDA_LON
 
 def merge_by_closest_timestamp(obs_table_path, frost_table_path):
     """Add GHI measurements from Florida and Flesland stations to obs_table based on closest timestamp.
@@ -77,6 +81,7 @@ def extract_pixel_by_location(nc_filepath, pixel_lat, pixel_lon, var_name="GHI_t
     return time_var, var_timeseries
     
 def convert_cftime_to_datetime(val):
+    """Convert DatetimeGregorian to pd.datetime"""
     if isinstance(val, DatetimeGregorian):
         # Convert to Python datetime via pd.Timestamp
         return pd.Timestamp(val.isoformat())
@@ -84,7 +89,7 @@ def convert_cftime_to_datetime(val):
 
 def add_simulated_florida_flesland_ghi_by_date(obs_table_path, df, out_path):
     """
-    Merge Florida and Flesland GHI into Sentinel-2 observations by matching on date (UTC).
+    Merge Florida and Flesland GHI measurements into Sentinel-2 cloud cover table by matching on date (UTC).
     If no match exists for a given date, the GHI columns remain NaN.
     """
     # Load Sentinel-2 table
@@ -111,8 +116,6 @@ def add_simulated_florida_flesland_ghi_by_date(obs_table_path, df, out_path):
     return merged
 
 
-
-
 if __name__ == "__main__": 
     obs_table_path = "data/processed/s2_cloud_cover_table_small_and_large_with_cloud_props.csv"
     frost_table_path = "data/processed/frost_ghi_1M_Flesland_Florida_10:30-11:30UTC.csv"
@@ -121,27 +124,19 @@ if __name__ == "__main__":
     obs_with_pixel_sim = "data/processed/s2_cloud_cover_with_stations_with_pixel_sim.csv"
     outpath_with_pixel_sim = "data/processed/s2_cloud_cover_with_stations_with_pixel_sim_test.csv"
 
-    # Step 1: Merge Stations data with cloud_cover aso observations table
-    """ obs_table = merge_by_closest_timestamp(obs_table_path, frost_table_path)
+    # Merge Stations data with cloud_cover observations table
+    obs_table = merge_by_closest_timestamp(obs_table_path, frost_table_path)
     print(obs_table.head())
     print(obs_table[["Florida_ghi_1M", "Flesland_ghi_1M"]].describe())
     print(obs_table.dtypes)
     
-    obs_table.to_csv("data/processed/s2_cloud_cover_table_small_and_large_with_stations_data.csv", index=False)"""
+    obs_table.to_csv("data/processed/s2_cloud_cover_table_small_and_large_with_stations_data.csv", index=False)
     
-    # Step 2: Extract Florida and Flesland pixels from model output
-    # Florida and Flesland coordinates source: frost.met.no
-    # frost: SN50539: 60.3837, 5.332 # Florida 1 until 2025, Plotting source unknown: 60.3833, 5.3333
-    #frost: SN50540: 60.383, 5.3327 (typo?) # Florida 2 since 2025, previously 60.3833, 5.3333 # ECAD: 60.38306, 5.33306
-    # Flesland, frost: 60.2892, 5.2265; ECAD: 60.28917, 5.22639, plotting source unknown: 60.292792, 5.222689
-    Florida_lat, Florida_lon = 60.38306, 5.33306 # source: ECAD
-    Flesland_lat, Flesland_lon = 60.28917, 5.22639
-    
-
+    # Extract Florida and Flesland pixels from model output (for different resolutions)
     for res in COARSE_RESOLUTIONS: 
         ghi_path = f"data/processed/simulated_ghi_without_terrain_only_mixed_{res}m.nc"
-        times, Florida_ghi = extract_pixel_by_location(ghi_path, Florida_lat, Florida_lon)
-        times, Flesland_ghi = extract_pixel_by_location(ghi_path, Flesland_lat, Flesland_lon)
+        times, Florida_ghi = extract_pixel_by_location(ghi_path, FLORIDA_LAT, FLORIDA_LON)
+        times, Flesland_ghi = extract_pixel_by_location(ghi_path, FLESLAND_LAT, FLESLAND_LON)
         extracted_pixels_df = pd.DataFrame({
             "time": times,
             f"Florida_ghi_sim_ECAD_{res}m": Florida_ghi,

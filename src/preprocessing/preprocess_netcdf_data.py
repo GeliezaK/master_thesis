@@ -1,18 +1,27 @@
+# =============================================================================
+# This script contains functions for preprocessing steps for netcdf files,
+# like the ones retrieved from CLAAS-3 and CLARA-A 3.0 datasets from CM SAF
+# Web Interface. 
+# CLAAS-3 cloud properties are retrieved from here: 
+# https://wui.cmsaf.eu/safira/action/viewProduktDetails?eid=22218_22239&fid=38 (COT, CPH, CGH)
+# and here: 
+# https://wui.cmsaf.eu/safira/action/viewProduktDetails?eid=22223_22244&fid=38 (CTH)
+# CLARA-A 3.0 surface albedo is retrieved from here: 
+# https://wui.cmsaf.eu/safira/action/viewProduktDetails?eid=22453_22560&fid=40 
+# =============================================================================
+
+
 import xarray as xr
 import glob, os
 import pandas as pd
 import numpy as np
-from netCDF4 import Dataset, date2num, num2date
+from netCDF4 import Dataset, num2date
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import seaborn as sns
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
-import cartopy.mpl.ticker as cticker
 from pathlib import Path
 from datetime import datetime
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 from src.model import BBOX, MIXED_THRESHOLD, OVERCAST_THRESHOLD
 
 def classify_sky_type(cc):
@@ -24,6 +33,7 @@ def classify_sky_type(cc):
             return "mixed"
 
 def inspect_file(filepath, variable_name):
+    """Open single netcdf file in filepath, print file structure and display variable. """
     # open the netCDF file
     ds = xr.open_dataset(filepath, decode_times=False)
 
@@ -38,136 +48,22 @@ def inspect_file(filepath, variable_name):
     print(f" {variable_name} Values:")
     print(variable.values)
 
-       
-def cfc_diurnal_cycle_monthly(filepath):
-    """Create a table that stores CFC (cloud cover fraction) values for function f(x,y,h,m) - for each 
-    hour h, month m and for each pixel x,y."""
-    # Load the sample file
-    ds = xr.open_dataset(filepath)
 
-    # Get variable Cloud fraction with dims (time, lat, lon)
-    cf = ds["CFC"]
-    
-    # Add "hour" and "month" coordinates
-    cf = cf.assign_coords(
-        hour=("time", cf["time"].dt.hour.data),
-        month=("time", cf["time"].dt.month.data)
-    )
-
-    # Compute mean cloud fraction per (lat, lon, hour, month)
-    f_table = cf.groupby(["month", "hour"]).mean("time")
-
-    return f_table
-
-
-def visualize_peak_hour(pattern =  "data/raw/comet2-CFC-2018/CFChm201807*.nc"):
-    # Load dataset from Path pattern
-    files = sorted(glob.glob(pattern))
-    print("Number of hourly files found: ", len(files))
-
-    ds = xr.open_mfdataset(
-        files,
-        combine="by_coords",
-        engine="h5netcdf",
-        preprocess=lambda ds: ds[["CFC"]],
-        parallel=True
-    )
-    
-    print(f"DS created: ", ds)
-
-    # Extract CFC only
-    cf = ds["CFC"]
-    
-    print("Cloud cover fraction: ", cf)
-
-    # Add "hour" and "month" coordinates explicitly 
-    cf = cf.assign_coords(
-        hour=("time", cf.time.dt.hour.values),
-        month=("time", cf.time.dt.month.values)
-    )
-
-
-    # For each month, find the hour of maximum cloud cover
-    peak_hour = (
-        cf
-        .groupby("month")          # loop over months
-        .apply(lambda x: x.groupby("hour").median("time").idxmax("hour"))
-    )
-
-    # Example: July
-    month = 7
-    peak_map = peak_hour.sel(month=month)
-
-    # Prepare figure + map axis
-    fig, ax = plt.subplots(
-        figsize=(10, 6),
-        subplot_kw={"projection": ccrs.PlateCarree()}
-    )
-
-    # Plot raster (without auto-colorbar)
-    im = peak_map.plot(
-        ax=ax,
-        transform=ccrs.PlateCarree(),
-        cmap="twilight",
-        vmin=0, vmax=23,
-        add_colorbar=False
-    )
-
-    # Align colorbar with map height
-    divider = make_axes_locatable(ax)
-    cax = divider.append_axes("right", size="5%", pad=0.1, axes_class=plt.Axes)
-    cbar = fig.colorbar(im, cax=cax, orientation="vertical")
-    cbar.set_label("Hour of max cloud cover")
-
-    # Add coastline
-    ax.add_feature(cfeature.COASTLINE.with_scale("10m"), linewidth=0.7, color = "white")
-
-    # Add landmarks
-    landmarks = {
-        "Bergen Center": (60.39299, 5.32415),
-        "Bergen Airport": (60.2934, 5.2181)
-    }
-    for name, (lat, lon) in landmarks.items():
-        ax.plot(lon, lat, "ro", markersize=3, transform=ccrs.PlateCarree())
-        ax.text(lon + 0.02, lat + 0.02, name,
-                transform=ccrs.PlateCarree(), fontsize=8, color="red")
-
-    ax.set_title(f"Hour of Maximum Cloud Cover - Month {month}")
-            
-    ax.set_xticks(np.arange(float(peak_map.lon.min()),
-                        float(peak_map.lon.max()), 0.5),
-              crs=ccrs.PlateCarree())
-    ax.set_xlabel("Longitude")
-    ax.set_yticks(np.arange(float(peak_map.lat.min()),
-                            float(peak_map.lat.max()), 0.5),
-                crs=ccrs.PlateCarree())
-    ax.set_ylabel("Latitude")
-
-    # Format tick labels
-    lon_formatter = cticker.LongitudeFormatter()
-    lat_formatter = cticker.LatitudeFormatter()
-    ax.xaxis.set_major_formatter(lon_formatter)
-    ax.yaxis.set_major_formatter(lat_formatter)
-
-    # Optional: add gridlines for clarity
-    gl = ax.gridlines(draw_labels=False, linestyle="--", color="gray", alpha=0.5)
-
-    
-    # Save and close
-    plt.savefig(f"output/hour_max_cloud_cover_month_{month}_median.png", bbox_inches="tight")
-    plt.close()
-    
 
 def extract_clara_albedo(data_folder, output_csv, target_lon=5.33):
     """
     Loop over all CLARA SAL NetCDF files in a folder and extract 
     black-, white-, blue-sky mean, median, and all-sky median albedo 
-    at given longitude.
+    at given longitude (files contain only one latitude value).
     
     Parameters:
         data_folder (str): folder containing all CLARA NetCDF files
         output_csv (str): path to save resulting CSV
         target_lon (float): longitude to extract data from
+        
+    Returns: 
+        df (Dataframe) : dataframe containing columns for date 
+                         and albedo values
     """
     # Find all NetCDF files
     file_list = sorted(glob.glob(os.path.join(data_folder, "*.nc")))
@@ -223,7 +119,7 @@ def extract_clara_albedo(data_folder, output_csv, target_lon=5.33):
 
 
 def plot_whole_time_series(df, variable_name, title, outpath):
-    """Plot the variable from the dataframe for the whole date range, set x-axis ticks for years and months only"""
+    """Plot the variable from the dataframe df for the whole available date range."""
     # Plot variable over time
     fig, ax = plt.subplots(figsize=(12, 5))
 
@@ -248,69 +144,6 @@ def plot_whole_time_series(df, variable_name, title, outpath):
     plt.savefig(outpath, dpi = 150)
     print(f"Figure saved to {outpath}")
     
-
-def plot_monthly_mean_albedos(clara_csv, s5p_csv, outpath):
-    """
-    Aggregate CLARA albedo medians (blue, black, white) by month across all years.
-    Overlay monthly mean S5P surface albedo and number of observations per month.
-    """
-    # --- Step 1: Load CLARA data ---
-    df_clara = pd.read_csv(clara_csv, parse_dates=["date"])
-    df_clara["month"] = df_clara["date"].dt.month
-
-    # --- Step 2: Compute monthly means for CLARA ---
-    clara_means = df_clara.groupby("month")[
-        ["blue_sky_albedo_all_median", "black_sky_albedo_all_median", "white_sky_albedo_all_median"]
-    ].mean()
-    
-    clara_counts = df_clara.groupby("month")["blue_sky_albedo_all_median"].count()
-
-    # --- Step 3: Load S5P data ---
-    df_s5p = pd.read_csv(s5p_csv, parse_dates=["month_start"])
-    df_s5p["month"] = df_s5p["month_start"].dt.month
-
-    # Compute monthly mean S5P surface albedo
-    s5p_monthly_means = df_s5p.groupby("month")["mean_surface_albedo"].mean()
-
-    # --- Step 4: Plot ---
-    fig, ax1 = plt.subplots(figsize=(10, 6))
-
-    # CLARA albedo curves
-    ax1.plot(clara_means.index, clara_means["blue_sky_albedo_all_median"], 
-             marker="o", linestyle="-", color="blue", label="Blue-sky median")
-    ax1.plot(clara_means.index, clara_means["black_sky_albedo_all_median"], 
-             marker="s", linestyle="--", color="black", label="Black-sky median")
-    ax1.plot(clara_means.index, clara_means["white_sky_albedo_all_median"], 
-             marker="^", linestyle=":", color="gray", label="White-sky median")
-
-    # S5P line
-    ax1.plot(s5p_monthly_means.index, s5p_monthly_means.values,
-             marker="d", linestyle="-.", color="green", label="S5P mean surface albedo")
-
-    # Axis labels
-    ax1.set_xlabel("Month")
-    ax1.set_ylabel("Mean surface albedo (fraction)")
-    ax1.set_title("Monthly mean surface albedo (CLARA 2015–2025 & S5P 2017–2025) (incl. snow/ice)")
-
-    # Month ticks
-    ax1.set_xticks(range(1, 13))
-    ax1.set_xticklabels(["Jan","Feb","Mar","Apr","May","Jun","Jul",
-                         "Aug","Sep","Oct","Nov","Dec"])
-    ax1.grid(True)
-    ax1.legend(loc="upper left")
-
-    # Secondary y-axis for number of CLARA observations
-    ax2 = ax1.twinx()
-    ax2.bar(clara_counts.index, clara_counts.values, 
-            alpha=0.3, color="orange", width=0.6, label="# obs CLARA")
-    ax2.set_ylabel("Number of observations")
-    ax2.legend(loc="upper right")
-
-    plt.tight_layout()
-    plt.savefig(outpath, dpi=150)
-    print(f"Figure saved to {outpath}.")
-    
-    return clara_means, clara_counts, s5p_monthly_means
 
 def merge_albedo_with_s2_table(s2_path="data/processed/s2_cloud_cover_table_small_and_large.csv",
                                         albedo_path="data/processed/SAL_2015-2025.csv"):
@@ -419,7 +252,7 @@ def get_claas3_filepath(claas_folderpath, dt, file_prefix, possible_times):
     
 def compute_roi_stats(var, mask=None, variable_name="cot", suffix="_large", base_stats=None):
     """
-    Compute statistics (min, max, mean, median, std) for a given ROI.
+    Compute statistics (min, max, mean, median, std) for a given ROI (small/large) and variable name (cot/cth/cph).
 
     Parameters
     ----------
@@ -567,8 +400,9 @@ def add_claas3_variable_to_cloud_cover_table(
     print("\n=== Rows where all stats are NaN ===")
     print(problematic_rows)
 
-    
 def compare_claas3_small_vs_large_roi(cloud_cover_filepath, selected_vars):
+    """For a selected pair of variables (small vs large roi), 
+    print the pearsons correlation between the small roi and large roi. """
     df = pd.read_csv(cloud_cover_filepath)
 
     # Select relevant columns
@@ -777,8 +611,6 @@ def clear_sky_index_per_sky_type(single_ghi_maps_filepath, cloud_cover_table_pat
         print(f"Saved aggregated mean maps to {aggregated_ghi_maps_outpath}")
 
 
-    
-    
 def aggregate_variable_monthly(
     in_nc_file,
     out_nc_file,
@@ -888,99 +720,6 @@ def aggregate_variable_monthly(
 
     print(f"✅ Monthly aggregation for '{variable_name}' saved to {out_nc_file}")
 
-
-def calculate_monthly_sky_type_probabilities(claas_folder_path="data/raw/claas3_201506-2025-08", outfile="data/processed/claas3_cloud_cover_sky_type_from_cot.csv"):
-    """
-    For each daily CLAAS-3 file at 11 UTC, calculate cloud cover and classify the sky type.
-
-    Parameters
-    ----------
-    claas_folder_path : str
-        Root folder path containing CLAAS-3 data in structure:
-        claas_folder_path/claas3/cpp/{year}/{month}/{day}/CPPin{yyyymmdd}1100*.nc
-    outfile : str
-        Output path for the resulting CSV or pickle file.
-    """
-
-    results = []
-
-    # Iterate over all daily 11:00 UTC CLAAS files
-    pattern = os.path.join(claas_folder_path, "claas3", "cpp", "*", "*", "*", "CPPin????????1100*.nc")
-    files = sorted(glob.glob(pattern))
-
-    if not files:
-        print(f"No files found matching pattern: {pattern}")
-        return
-
-    print(f"Found {len(files)} daily 11 UTC files.")
-
-    for f in tqdm(files, desc="Processing CLAAS files", unit="file"):        
-        try:
-            # Extract date from filename
-            basename = os.path.basename(f)
-            date_str = basename[5:13]  # e.g. CPPin20200504...
-            date = datetime.strptime(date_str, "%Y%m%d")
-
-            with Dataset(f, "r") as ds:
-                # Cloud phase: 0=clear, 1=liquid, 2=ice
-                cph = ds.variables["cot"][:]
-                cph = np.array(cph.filled(np.nan))  # convert masked to normal array with NaNs
-
-            # Count valid pixels (not NaN)
-            valid_mask = np.isfinite(cph)
-            total_pixels = valid_mask.sum()
-            if total_pixels < 425: 
-                tqdm.write("# valid pixels from 425: ", total_pixels)
-
-            # If more than 50% missing, skip day
-            total_possible = cph.size
-            missing_fraction = 1 - (total_pixels / total_possible)
-            if missing_fraction > 0.5:
-                tqdm.write(f"Skipping {f} — {missing_fraction*100:.1f}% missing data")
-                continue
-
-            # Compute cloud cover (only over valid pixels)
-            cloudy_pixels = np.sum(cph[valid_mask] > 0)
-            cloud_cover = (cloudy_pixels / total_pixels) * 100
-
-            cloud_cover = (cloudy_pixels / total_pixels) * 100
-
-            # Classify sky type
-            if cloud_cover <= MIXED_THRESHOLD:
-                sky_type = "clear"
-            elif cloud_cover >= OVERCAST_THRESHOLD:
-                sky_type = "overcast"
-            else:
-                sky_type = "mixed"
-
-            results.append({
-                "year": date.year,
-                "month": date.month,
-                "day": date.day,
-                "cloud_cover": cloud_cover,
-                "sky_type": sky_type
-            })
-
-        except Exception as e:
-            tqdm.write(f"⚠️ Error reading {f}: {e}")
-            continue
-
-    # Convert to DataFrame
-    df = pd.DataFrame(results)
-    print(f"\nProcessed {len(df)} daily records from {df['year'].min()}–{df['year'].max()}.")
-    print(df["sky_type"].value_counts())
-
-    # Save result
-    if outfile.endswith(".csv"):
-        df.to_csv(outfile, index=False)
-    elif outfile.endswith(".pkl"):
-        df.to_pickle(outfile)
-    else:
-        # default to CSV
-        df.to_csv(outfile + ".csv", index=False)
-
-    print(f"✅ Saved daily sky-type data to {outfile}")
-    return df
     
 def summarize_monthly_cloud_stats(df, cloud_col="cloud_cover", sky_type_col="sky_type"):
     """
@@ -1039,8 +778,9 @@ def summarize_monthly_cloud_stats(df, cloud_col="cloud_cover", sky_type_col="sky
     return monthly_summary
 
 
-
 def get_area_mean_clear_sky_index(clear_sky_index_nc_filepath):
+    """For the clear-sky index variable in the netcdf file, compute the mean per timestep and 
+    return dataframe with columns date and mean_clear_sky_index."""
     dates = []
     means = []
 
@@ -1144,31 +884,25 @@ if __name__ == "__main__":
     
     # --------------------- Data exploration --------------------------------
     inspect_file("data/raw/comet2-CFC-2018/CFChm201807121900002UD1000101UD.nc", "CFC")
-    #plot_claas3_file(aux_file, sample_file, "cth")
-    #plot_monthly_mean_albedos(clara_csv=clara_csv, s5p_csv=s5p_csv, outpath=outpath)
-    #crop_to_roi("data/raw/claas-3_test/*.nc", "data/raw/claas-3_test_small_roi.nc", aux_filepath = aux_file)
-    #cfc_diurnal_cycle_monthly("data/comet2_roi_month.nc")
-    visualize_peak_hour()
+    plot_claas3_file(aux_file, sample_file, "cth")
        
     # ----------------------- Extract albedo and cloud properties ----------------------
-    #add_claas3_variable_to_cloud_cover_table(claas_folder_cpp, aux_file, s2_csv, 
-    #                                         variable_name="cgt", file_prefix="CPPin")
+    add_claas3_variable_to_cloud_cover_table(claas_folder_cpp, aux_file, s2_csv, 
+                                             variable_name="cgt", file_prefix="CPPin")
     
-    #df_albedo = extract_clara_albedo(data_folder, clara_csv, target_lon=5.33)
-    #df_albedo = pd.read_csv(clara_csv, parse_dates=["date"])
-    #print(df_albedo[["black_sky_albedo_median", "black_sky_albedo_all_median"]].describe())
-    #s5p_csv = "data/processed/s5p_monthly_mean_surface_albedo.csv"
-    #outpath = "output/monthly_mean_albedo_comparison_incl_snow.png"
+    df_albedo = extract_clara_albedo(data_folder, clara_csv, target_lon=5.33)
+    df_albedo = pd.read_csv(clara_csv, parse_dates=["date"])
+    print(df_albedo[["black_sky_albedo_median", "black_sky_albedo_all_median"]].describe())
+    outpath = "output/monthly_mean_albedo_comparison_incl_snow.png"
     
     # ------------------- Monthly sky type probabilities ---------------------
-    #df = calculate_monthly_sky_type_probabilities()
-    #df = pd.read_csv("data/processed/claas3_cloud_cover_sky_type_from_cot.csv")
-    #claas_monthly_summary = summarize_monthly_cloud_stats(df)
+    df = pd.read_csv("data/processed/claas3_cloud_cover_sky_type_from_cot.csv")
+    claas_monthly_summary = summarize_monthly_cloud_stats(df)
     
     # ----------------- Clear Sky index ------------------
-    #convert_ghi_to_clear_sky_index(irradiance_infile_nc=mixed_sky_ghi, cloud_cover_table_path=sim_vs_obs_path)
+    convert_ghi_to_clear_sky_index(irradiance_infile_nc=mixed_sky_ghi, cloud_cover_table_path=sim_vs_obs_path)
     
-    """aggregate_variable_monthly(
+    aggregate_variable_monthly(
         in_nc_file=mixed_sky_ghi,
         out_nc_file=monthly_clear_sky_index_maps,
         variable_name="clear_sky_index",
@@ -1206,12 +940,12 @@ if __name__ == "__main__":
     )
     
     monthly_sky_types = sim_monthly_summary[["month", "clear", "mixed", "overcast"]]
-    monthly_sky_types.to_csv("data/processed/monthly_sky_type_counts.csv", index=False)"""
+    monthly_sky_types.to_csv("data/processed/monthly_sky_type_counts.csv", index=False)
     
     # --------------------- Extract clear-sky area mean (for annual sim) -------------------
-    #clear_sky_df = get_area_mean_clear_sky_index(mixed_sky_ghi)
-    #clear_sky_df.to_csv(area_mean_clear_sky_index_outpath, index=False)
-    #merge_area_mean_clear_sky_index_with_sky_type(area_mean_clear_sky_index_outpath, sim_vs_obs_path)
+    clear_sky_df = get_area_mean_clear_sky_index(mixed_sky_ghi)
+    clear_sky_df.to_csv(area_mean_clear_sky_index_outpath, index=False)
+    merge_area_mean_clear_sky_index_with_sky_type(area_mean_clear_sky_index_outpath, sim_vs_obs_path)
 
     
     

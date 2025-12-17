@@ -1,3 +1,9 @@
+# ===============================================================================
+# Script with functions for preprocessing steps for Sentinel-2 viewing angles 
+# Sentinel-2 viewing angles are exported from GEE Sentinel-2 Harmonized dataset 
+# with the export script in src/io/export_sentinel2_images.ipynb
+# ================================================================================
+
 import matplotlib.pyplot as plt 
 import pandas as pd 
 import numpy as np
@@ -119,10 +125,11 @@ if __name__ == "__main__":
     viewing_angles_folder_path = "data/processed/S2_viewing_angles"
     viewing_angles_table_path = "data/processed/S2_viewing_angles_full_table.csv"
     s2_inpath = "data/processed/s2_cloud_cover_table_small_and_large.csv"
-    plot_std_hist_of_daily_groups(viewing_angles_table_path)
     
-    # merge into one 
-    #merge_all_in_path(inpath, outpath)
+    # Single files in folder into one file 
+    #merge_all_in_path(viewing_angles_folder_path, viewing_angles_table_path)
+    
+    plot_std_hist_of_daily_groups(viewing_angles_table_path)
     
     # Merge into new file
     add_viewing_angles(cloud_cover_filepath=s2_inpath, 
