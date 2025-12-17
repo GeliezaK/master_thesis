@@ -8,17 +8,6 @@ import numpy as np
 import pandas as pd
 from src.model import MIXED_THRESHOLD, OVERCAST_THRESHOLD, COARSE_RESOLUTIONS
 from src.model import FLESLAND_LAT, FLESLAND_LON, FLORIDA_LAT, FLORIDA_LON
-    
-def load_image(filepath): 
-    with rasterio.open(filepath) as src:
-        dem = src.read(1).astype(float)
-        profile = src.profile
-    return dem, profile
-    
-
-def simulate_annual_ghi():
-    """Simulate for a theoretical year in Bergen the annual GHI."""
-    pass 
 
 
 def get_closest_lut_entry(lut, unique_values, doy, hour, albedo, altitude_km,

@@ -1,4 +1,6 @@
-# Generate cloud attenuation factor (CAF) Lookup table (LUT) as input to modelling solar irradiance 
+# ==================================================================================
+# Generate the lookup-table (LUT) with libRadtran radiative transfer solver Disort 
+# ==================================================================================
 
 import os
 import glob
@@ -17,9 +19,9 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 for 3D plotting
 
 def get_sunshine_hours_for_doy(doy, location):
+    """Get hours with sunshine for day of year doy and location."""
     # Convert DOY to date in a non-leap year (e.g., 2024)
     year = 2024  # Non-leap year is fine unless you're using 366
     date = datetime(year, 1, 1) + timedelta(days=doy - 1)
@@ -43,7 +45,7 @@ def get_sunshine_hours_for_doy(doy, location):
 
 
 # Parameter discretizations
-# Day of year: 15th of each month 
+# Day of year: 1st and 15th of each month 
 # Reference year (non-leap year assumed, e.g. 2021)
 year = 2021
 
@@ -90,27 +92,22 @@ LWC = 0.1 # from libRadtran simple water cloud example and Lee et al. (2010)
 IWC = 0.015 # from Hong and Liu (2015) for 60° Latitude 5km cloud altitude, vs. 0.015 from libRadtran simple ice cloud example
 
 # Cloud optical depth at 760nm, from Sentinel-5P
-# Percentiles 1, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99, between 0 and 60, 
-# plus values 0.1, 65, 75, 90, 100, 140, 150, empirical values from claas cot small region
+# log-scaled 14 values between 0 and 60, 
+# plus values 65, 75, 90, 100, 140, 150, empirical values from claas cot small region
 COT =  [0.1, 0.31, 0.75, 1.31, 2.17, 3.4, 4.87, 7.11, 9.54, 14.03, 19.66, 29.09, 38.73, 53.51, 65, 75, 90, 100, 140, 150]
  
-# Cloud base height in km, from Sentinel-5P
-# Altitude + Percentiles 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99, empirical values from S5P 
-#CLOUD_BASE_HEIGHT = [0.08, 0.167, 0.285, 0.571, 0.915, 1.286, 1.753, 2.370, 3.171, 4.165, 5.451, 6.543, 8.498]
+# Cloud base height in km, from CLAAS-3
+# Altitude + Percentiles 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99, empirical values from CLAAS-3 
 CLOUD_TOP_HEIGHT = [0.575,  1.291,  2.008, 2.724,  3.440,  4.157,  4.873,  5.589,  6.306,  7.022, 
                     7.738, 8.454, 9.171, 9.887, 10.603, 11.320, 12.036, 12.752, 13.469, 14.185]
 
-# Cloud thickness (vertical extent) in km, from Sentinel-5P 
+# Cloud thickness (vertical extent) in km, from CLAAS-3
 # fixed at 1km, according to satellite data valid for large majority of clouds 
 CLOUD_GEOGRAPHICAL_THICKNESS = 1 
 
 # Cloud types
 CLOUD_PHASE = ['ice', 'water']
 
-# COD scaling factor, conversion from 760nm to 550nm 
-# According to Serrano et al. (2015), tau is almost insensitive to wavelength with variation of at most 2%
-# Therefore, ignore the wavelength scaling and use 760nm to input for 550nm in libradtran
-TAU_SCALING_FACTOR = 1 
 
 # Output directory 
 OUTPUT_DIR = "data/processed/LUT/claas3/"
@@ -118,7 +115,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 def descriptive_stats_claas3(df):
-    """Generate descriptive statistics of cloud properties in Bergen based on claas 3 data"""
+    """Generate descriptive statistics of cloud properties in Bergen based on claas 3 data."""
     print(df.describe())
     
     # Calculate percentiles
@@ -142,7 +139,6 @@ def descriptive_stats_claas3(df):
     cot_min = np.round(df["cot_median_small"].min(),2)
 
     cot_custom = sorted(set(cot_percentiles + [cot_min, 65, 75, 90, 100, 140, 150]))
-
 
     print("\nAlbedo percentiles:\n", albedo_stats)
     print("\nCloud Top Height percentiles:\n", cth_stats)
@@ -183,217 +179,8 @@ def descriptive_stats_claas3(df):
     print(f"Descriptive claas stats saved to {outpath}.")
 
 
-
-def descriptive_stats_s5p(df):
-    """Generate descriptive statistics of cloud properties in Bergen"""
-    print(df.describe())
-    
-    # Calculate percentiles
-    # Define percentiles
-    albedo_percentiles = [5, 25, 50, 75, 95]
-    cloud_percentiles = [1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 99]
-
-    # Compute and round percentiles
-    albedo_stats = df["surface_albedo"].quantile([p / 100 for p in albedo_percentiles]).round(3)
-    base_height_stats = df["cloud_base_height"].quantile([p / 100 for p in cloud_percentiles]).round(0)
-    cod_stats = df["cloud_optical_depth"].quantile([p / 100 for p in cloud_percentiles]).round(2)
-
-    # Print results
-    print("Surface Albedo Percentiles:")
-    print(albedo_stats)
-    print("\nCloud Top Height Percentiles:")
-    print(base_height_stats)
-    print("\nCloud Optical Depth Percentiles:")
-    print(cod_stats)
- 
-    # Plot 4 histograms in a 2x2 grid
-    fig, axs = plt.subplots(2, 2, figsize=(14, 8))
-    fig.suptitle("Distributions of Cloud and Surface Properties", fontsize=16)
-
-    # Plot each feature
-    axs[0, 0].hist(df["surface_albedo"], bins=50, color='skyblue', edgecolor='black')
-    axs[0, 0].set_title("Surface Albedo")
-    axs[0, 0].set_xlabel("Albedo")
-    axs[0, 0].set_ylabel("Frequency")
-
-    axs[0, 1].hist(df["cloud_base_height"], bins=50, color='lightgreen', edgecolor='black')
-    axs[0, 1].set_title("Cloud Base Height (m)")
-    axs[0, 1].set_xlabel("Height (m)")
-    axs[0, 1].set_ylabel("Frequency")
-
-    axs[1, 0].hist(df["cloud_vertical_extent"], bins=50, color='salmon', edgecolor='black')
-    axs[1, 0].set_title("Cloud Vertical Extent (m)")
-    axs[1, 0].set_xlabel("Extent (m)")
-    axs[1, 0].set_ylabel("Frequency")
-
-    axs[1, 1].hist(df["cloud_optical_depth"], bins=50, color='orange', edgecolor='black')
-    axs[1, 1].set_title("Cloud Optical Depth")
-    axs[1, 1].set_xlabel("Optical Depth")
-    axs[1, 1].set_ylabel("Frequency")
-
-    # Layout adjustment
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plt.savefig("output/s5p_cloud_properties_descriptive_stats.png")
-    
-def evaluate_cluster_range(df, k_range=range(2, 25), repeats=10, sample_size=10000):
-    """Evaluate clustering quality for a range of cluster numbers."""
-    
-    # Prepare results
-    silhouette_means = []
-    silhouette_stds = []
-    ch_means = []
-    ch_stds = []
-    db_means = []
-    db_stds = []
-
-    for k in k_range:
-        print(f"----------------- k = {k} ------------------")
-        sil_scores = []
-        ch_scores = []
-        db_scores = []
-
-        for r in range(repeats):
-            # New seed for each repeat
-            seed = 10 + r  
-            df_sample = df.sample(n=sample_size, random_state=seed)
-            features = df_sample[["cloud_base_height", "cloud_vertical_extent", "cloud_optical_depth"]]
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(features)
-
-            # KMeans clustering
-            kmeans = KMeans(n_clusters=k, random_state=seed, n_init="auto")
-            labels = kmeans.fit_predict(X_scaled)
-
-            # Metrics
-            sil = silhouette_score(X_scaled, labels)
-            ch = calinski_harabasz_score(X_scaled, labels)
-            db = davies_bouldin_score(X_scaled, labels)
-
-            sil_scores.append(sil)
-            ch_scores.append(ch)
-            db_scores.append(db)
-            
-            print(f"Silhouette Score: {sil:.3f}")
-            print(f"Calinski-Harabasz Score: {ch:.2f}")
-            print(f"Davies-Bouldin Index: {db:.3f}\n")
-
-        # Store mean and std
-        silhouette_means.append(np.mean(sil_scores))
-        silhouette_stds.append(np.std(sil_scores))
-        ch_means.append(np.mean(ch_scores))
-        ch_stds.append(np.std(ch_scores))
-        db_means.append(np.mean(db_scores))
-        db_stds.append(np.std(db_scores))
-
-    # Plotting
-    fig, axs = plt.subplots(1, 3, figsize=(18, 5))
-    k_vals = list(k_range)
-
-    axs[0].errorbar(k_vals, silhouette_means, yerr=silhouette_stds, fmt='-o', capsize=4, color='skyblue')
-    axs[0].set_title("Silhouette Score vs. Cluster Count")
-    axs[0].set_xlabel("Number of Clusters")
-    axs[0].set_ylabel("Silhouette Score")
-
-    axs[1].errorbar(k_vals, ch_means, yerr=ch_stds, fmt='-o', capsize=4, color='seagreen')
-    axs[1].set_title("Calinski-Harabasz Score vs. Cluster Count")
-    axs[1].set_xlabel("Number of Clusters")
-    axs[1].set_ylabel("CH Score")
-
-    axs[2].errorbar(k_vals, db_means, yerr=db_stds, fmt='-o', capsize=4, color='salmon')
-    axs[2].set_title("Davies-Bouldin Index vs. Cluster Count")
-    axs[2].set_xlabel("Number of Clusters")
-    axs[2].set_ylabel("DB Index")
-
-    plt.suptitle(f"Clustering Evaluation for k = {k_vals[0]} to {k_vals[-1]}  (avg of {repeats} runs per k)", fontsize=16)
-    plt.tight_layout()
-    plt.savefig("output/s5p_cloud_properties_evaluate_num_clusters.png")
-    plt.show()
-    
-def generate_cloud_classes(df, n_clusters=4, sample_size=10000, random_state=14): 
-    """Cluster clouds according to properties cloud_base_height, cloud_vertical_extent, cloud_optical_depth.""" 
-    # Subsample
-    df_sample = df.sample(n=sample_size, random_state=random_state)
-
-    # Normalize features
-    features = df_sample[["cloud_base_height", "cloud_vertical_extent", "cloud_optical_depth"]]
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(features)
-
-    # KMeans clustering
-    kmeans = KMeans(n_clusters=n_clusters, random_state=random_state, n_init="auto")
-    labels = kmeans.fit_predict(X_scaled)
-    
-    # Evaluation metrics
-    silhouette = silhouette_score(X_scaled, labels)
-    ch_score = calinski_harabasz_score(X_scaled, labels)
-    db_score = davies_bouldin_score(X_scaled, labels)
-
-    print(f"Silhouette Score: {silhouette:.3f}")
-    print(f"Calinski-Harabasz Score: {ch_score:.2f}")
-    print(f"Davies-Bouldin Index: {db_score:.3f}\n")
-
-    # Centroids in original units
-    centroids_original_units = scaler.inverse_transform(kmeans.cluster_centers_)
-    centroids_df = pd.DataFrame(centroids_original_units, columns=features.columns)
-    centroids_df.index.name = "Cluster"
-    print("Cluster centroids (original feature space):")
-    print(centroids_df.round(2))
-    
-    # Print size of each cluster
-    cluster_sizes = np.bincount(labels)
-    print("\nCluster sizes (number of points in each cluster):")
-    for i, size in enumerate(cluster_sizes):
-        print(f"Cluster {i}: {size} points")
-        
-    # Visualize using pca
-    pca = PCA(n_components=2)
-    X_pca = pca.fit_transform(X_scaled)
-
-    df_plot = pd.DataFrame(X_pca, columns=['PC1', 'PC2'])
-    df_plot['Cluster'] = labels
-
-    plt.figure(figsize=(10, 6))
-    scatter = plt.scatter(df_plot['PC1'], df_plot['PC2'], c=df_plot['Cluster'], cmap='tab10', alpha=0.6, s=10)
-    plt.title(f"PCA Projection of Cloud Clusters (k={n_clusters})")
-    plt.xlabel("Principal Component 1")
-    plt.ylabel("Principal Component 2")
-    plt.legend(*scatter.legend_elements(), title="Cluster")
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(f"output/s5p_cloud_properties_visualize_k={n_clusters}_pca.png")
-    
-    # Visualize 3D using all features 
-    # Create a DataFrame with original (unscaled) values and cluster labels
-    df_sample_plot = df_sample.copy()
-    df_sample_plot["Cluster"] = labels
-
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
-
-    # 3D scatter plot
-    scatter = ax.scatter(
-        df_sample_plot["cloud_base_height"],
-        df_sample_plot["cloud_vertical_extent"],
-        df_sample_plot["cloud_optical_depth"],
-        c=df_sample_plot["Cluster"],
-        cmap='tab10',
-        s=10,
-        alpha=0.6
-    )
-
-    ax.set_xlabel("Cloud Base Height (m)")
-    ax.set_ylabel("Vertical Extent (m)")
-    ax.set_zlabel("Optical Depth")
-    ax.set_title(f"3D Cluster Visualization of Clouds (k={n_clusters})")
-    legend = ax.legend(*scatter.legend_elements(), title="Cluster", loc='upper right')
-    ax.add_artist(legend)
-    plt.tight_layout()
-    plt.savefig(f"output/s5p_cloud_properties_visualize_clusters_k={n_clusters}_3D.png")
-    plt.show()    
-
-    return labels, centroids_df
-
 def generate_LUT():
+    """Generate the look-up table with radiative transfer calculations from libradtran (former uvspec) DISORT routine."""
     os.makedirs("cloudfiles", exist_ok=True)
     
     # Flattened combinations including hour
@@ -487,9 +274,10 @@ def generate_LUT():
 
         print(f"✅ Saved LUT: {output_path}")
 
-   
+
 
 def write_cloud_file(filename, base, top, lwc, reff):
+    """Save to filename the cloud parameter input file to uvspec."""
     with open(filename, "w") as f:
         f.write("# z LWC/IWC R_eff\n")
         f.write(f"{top:.3f} 0 0\n")
@@ -497,6 +285,7 @@ def write_cloud_file(filename, base, top, lwc, reff):
 
 def generate_uvspec_input(doy, hour, albedo, profile,
                           cloud_file=None, cloud_phase=None, cot=None):
+    """Generate uvspec input string from parameters."""
     month = doy_to_date[doy][0]
     day = doy_to_date[doy][1]
     lines = [
@@ -526,18 +315,9 @@ def generate_uvspec_input(doy, hour, albedo, profile,
 
     return "\n".join(lines)
 
-def cloud_file_alt_range(filepath):
-    try:
-        with open(filepath) as f:
-            lines = [line for line in f if not line.startswith("#") and line.strip()]
-            altitudes = [float(line.split()[0]) for line in lines]
-            z_max, z_min = max(altitudes), min(altitudes)
-            return f"{z_min} {z_max}"
-    except Exception as e:
-        print(f"Failed to read cloud file {filepath}: {e}")
-        return "0 0"
 
 def run_uvspec(input_str, out_path="output/uvspec.out", err_path="output/verbose.txt"):
+    """Run uvspec routine given the input string and save results to out_path and print errors to err_path."""
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w") as out_file, open(err_path, "w") as err_file:
         result = subprocess.run(
@@ -565,7 +345,8 @@ def run_uvspec(input_str, out_path="output/uvspec.out", err_path="output/verbose
         return np.nan, np.nan, np.nan
 
 def merge_LUT_files(lut_folder, output_file): 
-    """Read all LUT files in lut_folder into one pd dataframe, concatenate and write to one LUT file in output_file."""
+    """Read all LUT files in lut_folder into one pd dataframe, 
+    concatenate and write to one LUT file in output_file."""
     # Pattern to match filenames
     pattern = os.path.join(lut_folder, 'LUT_doy*_hod*_alb*.csv')
 
@@ -586,21 +367,13 @@ def merge_LUT_files(lut_folder, output_file):
 
 
 if __name__ == "__main__":
-    #df = pd.read_csv("data/s5p_cloud_properties_per_pixel.csv")
-    #df = df[["surface_albedo", "cloud_base_height", "cloud_top_height", "cloud_optical_depth"]].dropna()
-    #df["cloud_vertical_extent"] = df["cloud_top_height"] - df["cloud_base_height"]
-    #df = df.drop(columns=["cloud_top_height"])
-    
-    #descriptive_stats_s5p(df)
-    #evaluate_cluster_range(df)
-    #labels, centroids = generate_cloud_classes(df, n_clusters=18)
+    # Read cloud properties from claas-3
+    df_claas = pd.read_csv("data/processed/s2_cloud_cover_table_small_and_large_with_simulated_florida_flesland_ghi.csv")
+    df_claas = df_claas[["date", "blue_sky_albedo_median", "cot_median_small", "cth_median_small", "cph_median_small"]]
+    descriptive_stats_claas3(df_claas)
+
+    # Generate LUT (runtime 32 hours)
     #generate_LUT()
+    
+    # Merge all lut files to one big csv
     #merge_LUT_files("data/processed/LUT/claas3", "data/processed/LUT/claas3/LUT.csv")
-    #df_claas = pd.read_csv("data/processed/s2_cloud_cover_table_small_and_large_with_simulated_florida_flesland_ghi.csv")
-    #df_claas = df_claas[["date", "blue_sky_albedo_median", "cot_median_small", "cth_median_small", "cph_median_small"]]
-    #descriptive_stats_claas3(df_claas)
-    count = 0
-    for hod_list in HOD_DICT.values(): 
-        count += len(hod_list)
-    print(count)
-    pass

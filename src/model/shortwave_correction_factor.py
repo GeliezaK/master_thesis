@@ -1,4 +1,7 @@
-import matplotlib.pyplot as plt
+# ==================================================================================
+# Calculate the direct shortwave correction factor given the DSM and timestamps
+# ==================================================================================
+
 import horayzon as hray
 import numpy as np
 import rasterio
@@ -6,7 +9,6 @@ import os
 from netCDF4 import Dataset, date2num
 from tqdm import tqdm
 import pandas as pd
-import xarray as xr
 from time import time
 from skyfield.api import load, wgs84
 from src.model.generate_LUT import DOY, HOD_DICT
@@ -22,20 +24,27 @@ def calculate_sw_dir_cor(
 
     Parameters
     ----------
+    dsm_filepath : str
+        Path to the digital surface model. 
+    times : list of pd.Timestamp
+        Timestamps for which to calculate the direct shortwave correction factor.
+    out_dir : str
+        Path to folder where to store the maps of correction factors for each timestamp.
     
     Returns
     -------
     out_file : str
-        Path to written GeoTIFF.
+        Path to .nc file where outputs are stored.
     """
+    
+    # -------------------------------------------------
+    # Setup 
+    # -------------------------------------------------
+    
     # Read Dsm file    
     with rasterio.open(dsm_filepath) as src:
         dsm = src.read(1)  # first band
         transform = src.transform
-        crs = src.crs
-        print(f"crs: {crs}")
-        origin = (transform.c, transform.f)  # (west, north) of top-left corner
-        print(f"origin: {origin}")
         # Column and row indices
         nrows, ncols = dsm.shape
         cols = np.arange(ncols)
@@ -48,12 +57,6 @@ def calculate_sw_dir_cor(
         # Convert row indices (y direction) to latitude
         _, lat = rasterio.transform.xy(transform, rows, np.zeros_like(rows))
         lat = np.array(lat, dtype=np.float64)  # shape = (nrows,)
-
-    #lat = lat[::-1]
-    #dsm = dsm[::-1, :]
-    print("lon:", lon.shape, lon[:5])
-    print("lat:", lat.shape, lat[:5])
-    print("DSM type:", type(dsm), "dtype:", dsm.dtype, "shape:", dsm.shape)
     
     elevation_ortho = np.ascontiguousarray(dsm)
     # orthometric height (-> height above mean sea level)
@@ -67,67 +70,47 @@ def calculate_sw_dir_cor(
     ellps = "WGS84"
     
     # Compute ECEF coordinates
-    print("DSM first values before correction:", dsm[2:4, 2:4])
     dsm += hray.geoid.undulation(lon, lat, geoid="EGM96")  # [m]
-    print("DSM first values after correction:", dsm[2:4,2:4])
     
     x_ecef, y_ecef, z_ecef = hray.transform.lonlat2ecef(*np.meshgrid(lon, lat),
                                                     dsm, ellps=ellps)
-    print(f"ECEF: X: {x_ecef[2:4, 2:4]}, \nY: {y_ecef[2:4, 2:4]}, \nZ: {z_ecef[2:4, 2:4]}")
     
+    # Transform to ENU coordinates
     trans_ecef2enu = hray.transform.TransformerEcef2enu(
     lon_or=lon[int(len(lon) / 2)], lat_or=lat[int(len(lat) / 2)], ellps=ellps)
     x_enu, y_enu, z_enu = hray.transform.ecef2enu(x_ecef, y_ecef, z_ecef,
                                               trans_ecef2enu)
 
-    print(f"ENU: x_enu: {x_enu.shape}, \ny_enu: {y_enu.shape}, \nz_enu: {z_enu.shape}")
     
     # Compute unit vectors (up and north) in ENU coordinates for whole domain
     vec_norm_ecef = hray.direction.surf_norm(*np.meshgrid(lon,lat))
     vec_north_ecef = hray.direction.north_dir(x_ecef, y_ecef,
                                             z_ecef, vec_norm_ecef,
                                             ellps=ellps)
-    print(f"Vec_norm_ecef: {vec_norm_ecef.shape}, {vec_norm_ecef[2:4, 2:4, 1]}")
-    print(f"Vec_north_ecef: {vec_north_ecef.shape}, {vec_north_ecef[2:4, 2:4, 1]}")
     vec_norm_enu = hray.transform.ecef2enu_vector(vec_norm_ecef, trans_ecef2enu)
     vec_north_enu = hray.transform.ecef2enu_vector(vec_north_ecef, trans_ecef2enu)
-
-    print(f"Vec_norm_enu:  {vec_norm_enu.shape}, {vec_norm_enu[2:4, 2:4, 1]}")
-    print(f"Vec_north_enu: {vec_north_enu.shape}, {vec_north_enu[2:4, 2:4, 1]}")
-  
+ 
     # Merge vertex coordinates and pad geometry buffer
     vert_grid = hray.auxiliary.rearrange_pad_buffer(x_enu, y_enu, z_enu)
 
     # Compute rotation matrix (global ENU -> local ENU)
     rot_mat_glob2loc = hray.transform.rotation_matrix_glob2loc(vec_north_enu,
                                                            vec_norm_enu)
-    print(f"Rotation Matrix shape: ", rot_mat_glob2loc.shape)
     
     # Compute slope (full grid, pad by 1 on each side)
     x_enu_pad = np.pad(x_enu, 1, mode="edge")
     y_enu_pad = np.pad(y_enu, 1, mode="edge")
     z_enu_pad = np.pad(z_enu, 1, mode="edge")
     
-    print(f"Shapes of padded: x_enu_pad {x_enu_pad.shape}, y_enu_pad {y_enu_pad.shape}, z_enu_pad {z_enu_pad.shape}")
-
     vec_tilt_enu = np.ascontiguousarray(
         hray.topo_param.slope_plane_meth(
             x_enu_pad, y_enu_pad, z_enu_pad,
             rot_mat=rot_mat_glob2loc, output_rot=False
         )[1:-1, 1:-1]
     )
-
-    print(f"vec_tilt_enu shape: ", vec_tilt_enu.shape, vec_tilt_enu[2:4, 2:4, 1])
     
     # Compute surface enlargement factor
     surf_enl_fac = 1.0 / (vec_norm_enu * vec_tilt_enu).sum(axis=2)
-    # surf_enl_fac[:] = 1.0
-    print("surf_enl_fac dtype:", surf_enl_fac.dtype)
-    print("surf_enl_fac shape:", surf_enl_fac.shape)
-    print("Number of NaNs:", np.isnan(surf_enl_fac).sum())
-    print("Number of infs:", np.isinf(surf_enl_fac).sum())
-    print("Valid value range (ignoring NaNs):",
-        np.nanmin(surf_enl_fac), "to", np.nanmax(surf_enl_fac))
     
     mask = np.ones(vec_tilt_enu.shape[:2], dtype=np.uint8)
     
@@ -144,16 +127,13 @@ def calculate_sw_dir_cor(
     sun = planets["sun"]
     earth = planets["earth"]
     loc_or = earth + wgs84.latlon(trans_ecef2enu.lat_or, trans_ecef2enu.lon_or)
-    print("sun: ", sun)
-    print("earth: ", earth)
-    print("loc_or: ", loc_or)
     # -> position lies on the surface of the ellipsoid by default
 
     # -----------------------------------------------------------------------------
     # Compute shortwave correction factor
     # -----------------------------------------------------------------------------
 
-    # Loop through time steps and save data to NetCDF file
+    # Loop through time steps and save data to NetCDF file incrementally
     ncfile = Dataset(filename=out_file, mode="w")
     ncfile.createDimension(dimname="time", size=None)
     ncfile.createDimension(dimname="lat", size=dim_in_0)
@@ -220,30 +200,15 @@ def calculate_sw_dir_cor(
         nc_data[i, :, :] = sw_dir_cor_buffer
         ncfile.close()
         
-    # -----------------------------------------------------------------------------
-    # Analyse performance of correction factor
-    # -----------------------------------------------------------------------------   
-    # Performance plot
-    fig = plt.figure(figsize=(10, 6))
-    plt.plot(times, comp_time_sw_dir_cor, lw=1.5, color="red",
-            label="SW_dir_cor (mean: %.2f"
-                % np.array(comp_time_sw_dir_cor).mean() + ")")
-    plt.ylabel("Computing time [seconds]")
-    plt.legend(loc="upper center", frameon=False, fontsize=11)
-    plt.title("Terrain size (" + str(dim_in_0) + " x " + str(dim_in_1) + ")",
-            fontweight="bold", fontsize=12)
-    performance_outpath = out_dir + "/Performance.png"
-    fig.savefig(performance_outpath, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Performance plot saved to {performance_outpath}.")
-
     return out_file
+
 
 def main(): 
     sw_cor_outpath = "data/processed/sw_cor/sw_cor_bergen_binned.nc"
     DSM_filepath = "data/processed/bergen_dsm_10m_epsg4326_reducer_mean.tif"
     year=2023
-    # Generate datetime objects for all times
+    
+    # Generate datetime objects for binned times to reduce number of runs
     times = []
     for doy in DOY:
         month_day = pd.Timestamp(year=year, month=1, day=1) + pd.Timedelta(days=doy-1)

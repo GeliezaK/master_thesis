@@ -1,3 +1,8 @@
+# ==========================================================================================
+# This script contains function to upscale the cloud mask images to coarser resolutions 
+# and to count the number of misclassifications of 10m pixels at coarser resolutions. 
+# ==========================================================================================
+
 import os
 import rasterio
 import numpy as np
@@ -19,15 +24,17 @@ def upscale_to_res(folderpath, res, outpath):
     ----------
     folderpath : str
         Path to folder containing input 10m resolution GeoTIFFs (binary masks).
-    res : int or float
+    res : int 
         Target resolution in meters (e.g., 100 for 100m).
     outpath : str
         Output folder path for upscaled GeoTIFFs.
     """
+    
     os.makedirs(outpath, exist_ok=True)
 
     files = sorted(glob(os.path.join(folderpath, "*.tif")))
 
+    # Loop over files, compute upscaled image and save
     for i,f in tqdm(enumerate(files), total=len(files), desc=f"Upscaling to res {res} m"):
         with rasterio.open(f) as src:
             data = src.read(1)
@@ -82,8 +89,16 @@ def count_misclassifications(cloud_mask_10m_path, cloud_mask_coarse_path, resolu
     with a coarse-resolution shadow mask (e.g. 100m, 500m, 1000m),
     and count per-timestamp how many fine pixels disagree. 
     Compare fine- vs coarse-resolution cloud/shadow masks even when the grids
-    do NOT align or divide evenly. Uses nearest-neighbor mapping in lat/lon space.
+    do not align or divide evenly. Uses nearest-neighbor mapping in lat/lon space.
 
+    Parameters
+    ----------
+    cloud_mask_10m_path : str
+        Path to the .nc file with cloud shadow masks at 10m resolution. 
+    cloud_mask_coarse_path : str
+        Path to the .nc file with cloud shadow masks at coarse resolution.
+    resolution : int 
+        Resolution of the coarse resolution in m. 
 
     Returns
     -------
@@ -196,7 +211,7 @@ if __name__ == "__main__":
     date="2016-02-04"
     sample_file = f"data/raw/S2_cloud_mask_large_thresh_40/S2_cloud_mask_large_{date}.tif"
     
-    """
+    # Extract the max and min coordinates from sample 10 m resolution file 
     with rasterio.open(sample_file) as src:
             bounds = src.bounds  # (left, bottom, right, top)
             shape = src.shape    # (height, width)
@@ -211,15 +226,16 @@ if __name__ == "__main__":
             print(f"  Lat (min, max): ({lat_min_orig:.6f}, {lat_max_orig:.6f})")
     
     for res in COARSE_RESOLUTIONS:
+        # Upscale all 10 m resolution images to target resolution and save as .tif files in new folder
         upscale_to_res(s2_cloud_mask_folderpath, res, f"data/processed/S2_cloud_mask_{res}m")
+        
+        # Test for a sample image that upscaling preserves coordinate boundaries
         tif_path = f"data/processed/S2_cloud_mask_{res}m/S2_cloud_mask_large_{date}_{res}m.tif"
-        #outpath = f"output/{date}_cloudmask_{res}m_upscaled"
-        #plot_tif_with_latlon(tif_path, outpath)
         with rasterio.open(tif_path) as src:
             bounds = src.bounds  # (left, bottom, right, top)
             shape = src.shape    # (height, width)
 
-            # TODO: put this in test folder
+            # Assert min and max coordinates stay the same for upscaled images 
             print(f"\nResolution: {res} m")
             print(f"  Shape (rows, cols): {shape}")
             delta = 10e-8
@@ -227,7 +243,7 @@ if __name__ == "__main__":
             assert abs(bounds.right - lon_max_orig) < delta , f"Lon (max) different from orig: ({bounds.right:.6f}, {lon_max_orig:.6f})"
             assert abs(bounds.bottom - lat_min_orig) < delta , f"Lat (min) different from orig: ({bounds.bottom:.6f}, {lat_min_orig:.6f})"
             assert abs(bounds.top - lat_max_orig) < delta , f"Lat (max) different from orig: ({bounds.top:.6f}, {lat_max_orig:.6f})"
-    """
+    
     all_results = []
     
     for res in COARSE_RESOLUTIONS: 

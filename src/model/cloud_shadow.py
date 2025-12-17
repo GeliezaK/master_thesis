@@ -3,25 +3,20 @@ import math
 import numpy as np 
 import os 
 import glob 
-from datetime import datetime, timedelta
 import rasterio 
 from rasterio.windows import from_bounds
-from scipy.ndimage import shift
-import imageio
 from tqdm import tqdm 
-from netCDF4 import Dataset, date2num, num2date
+from netCDF4 import Dataset, date2num
 import pandas as pd
-from time import time
-import matplotlib.pyplot as plt
-from src.plotting.high_res_maps import plot_single_band
 from model.instantaneous_GHI_model import get_cloud_properties
 from src.model import CENTER_LAT, CENTER_LON, BBOX, MIXED_THRESHOLD, OVERCAST_THRESHOLD, COARSE_RESOLUTIONS
 
+# Radius of Earth
 R_EARTH = 6371000
 
 
-# Get solar zenith and azimuth
 def get_solar_angle(datetime, lat=CENTER_LAT, lon=CENTER_LON): 
+    """Get solar azimuth and zenith angles from timestamp datetime and location lat/lon."""
     solpos = pvlib.solarposition.get_solarposition(datetime, lat, lon)
     zenith = float(solpos['zenith'].values[0])
     azimuth = float(solpos['azimuth'].values[0])
@@ -42,14 +37,14 @@ def get_cloud_shadow_displacement(solar_zenith, solar_azimuth,
     cbh_m : cloud base height in meters
     sat_zenith : satellite viewing zenith angle in degrees
     sat_azimuth : satellite viewing azimuth angle in degrees (0=north, clockwise)
-    pixel_size : resolution of the raster in meters
     cloud_top_height : optional, cloud top height in meters.
                        If not provided, cbh_m is used.
+    verbose : print logging messages if True. Default: False. 
     
     Returns
     -------
-    dx_pix : Total displacement in x-direction in pixels
-    dy_pix : Total displacement in y_direction in pixels
+    dx_total : Total displacement in x-direction in meters
+    dy_total : Total displacement in y_direction in meters
     """
     assert 0 <= solar_zenith <= 85, (
         f"Invalid solar zenith angle {solar_zenith:.2f}°. "
@@ -103,16 +98,19 @@ def meters_to_latlon_offset(dx_m, dy_m, lat_center):
     dlon = dx_m / (R_EARTH * math.cos(lat_center)) * (180/np.pi)
     return dlat, dlon
 
+
 def read_shadow_roi(cloud_mask_filepath, dx_m, dy_m):
     """
-    Cut out the region of interest (ROI) corresponding to the projected shadow.
+    Cut out the cloud shadow from the large cloud mask. 
+    Resulting cloud shadow mask has the size of the study area (region of interest (ROI)), 
+    but is shifted in x and y direction according to the shadow projection.
     
     Parameters
     ----------
     cloud_mask_filepath : path to cloud mask raster
-    roi_bbox : dict with keys "north", "south", "east", "west" (lat/lon)
     dx_m, dy_m : shadow displacement in meters
     """
+    
     # Compute center latitude of ROI for accurate lon scaling
     dlat, dlon = meters_to_latlon_offset(dx_m, dy_m, CENTER_LAT)
 
@@ -137,13 +135,13 @@ def read_shadow_roi(cloud_mask_filepath, dx_m, dy_m):
     
 def save_shadow_masks_to_nc(cloud_props_filepath, sat_cloud_mask_dir, out_nc_file, verbose=False):
     """
-    Loop over selected rows in cloud_props, compute cloud shadow displacement,
+    Cloud shadow computation workflow:
+    Loop over selected rows in cloud_props_filepath, compute cloud shadow displacement,
     extract shadow masks using read_shadow_roi, and save to NetCDF incrementally.
 
     Filtering: only rows with
         mixed_threshold < cloud_cover_large < overcast_threshold
 
-    Grid: fixed 10m pixel resolution in BBOX.
     """
 
     # -------------------------------------------------------------------------
@@ -298,8 +296,10 @@ if __name__=="__main__":
     cloud_cover_table_filepath = "data/processed/s2_cloud_cover_table_small_and_large_with_stations_data.csv"
     single_shadow_maps_nc = "data/processed/cloud_shadow_thresh40.nc"
     monthly_shadow_maps_nc = "data/processed/cloud_shadow_thresh40_monthly.nc"
-    #save_shadow_masks_to_nc(cloud_cover_table_filepath, s2_cloud_mask_folderpath,
-    #                        single_shadow_maps_nc)
+    
+    # Compute shadow projection and save shadow masks: 
+    save_shadow_masks_to_nc(cloud_cover_table_filepath, s2_cloud_mask_folderpath,
+                           single_shadow_maps_nc)
     
     # Now for upscaled cloud mask images
     for res in COARSE_RESOLUTIONS: 
