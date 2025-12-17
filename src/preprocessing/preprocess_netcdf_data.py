@@ -60,20 +60,38 @@ def cfc_diurnal_cycle_monthly(filepath):
     return f_table
 
 
-def visualize_peak_hour(filepath):
-    # Load dataset
-    ds = xr.open_dataset(filepath)
+def visualize_peak_hour(pattern =  "data/raw/comet2-CFC-2018/CFChm201807*.nc"):
+    # Load dataset from Path pattern
+    files = sorted(glob.glob(pattern))
+    print("Number of hourly files found: ", len(files))
+
+    ds = xr.open_mfdataset(
+        files,
+        combine="by_coords",
+        engine="h5netcdf",
+        preprocess=lambda ds: ds[["CFC"]],
+        parallel=True
+    )
+    
+    print(f"DS created: ", ds)
+
+    # Extract CFC only
     cf = ds["CFC"]
+    
+    print("Cloud cover fraction: ", cf)
 
     # Add "hour" and "month" coordinates explicitly 
     cf = cf.assign_coords(
-        hour=("time", cf["time"].dt.hour.data),
-        month=("time", cf["time"].dt.month.data)
+        hour=("time", cf.time.dt.hour.values),
+        month=("time", cf.time.dt.month.values)
     )
 
+
     # For each month, find the hour of maximum cloud cover
-    peak_hour = cf.groupby("month").map(
-        lambda x: x.groupby("hour").mean("time").idxmax("hour")
+    peak_hour = (
+        cf
+        .groupby("month")          # loop over months
+        .apply(lambda x: x.groupby("hour").median("time").idxmax("hour"))
     )
 
     # Example: July
@@ -112,16 +130,18 @@ def visualize_peak_hour(filepath):
     for name, (lat, lon) in landmarks.items():
         ax.plot(lon, lat, "ro", markersize=3, transform=ccrs.PlateCarree())
         ax.text(lon + 0.02, lat + 0.02, name,
-                transform=ccrs.PlateCarree(), fontsize=7, color="red")
+                transform=ccrs.PlateCarree(), fontsize=8, color="red")
 
     ax.set_title(f"Hour of Maximum Cloud Cover - Month {month}")
             
     ax.set_xticks(np.arange(float(peak_map.lon.min()),
                         float(peak_map.lon.max()), 0.5),
               crs=ccrs.PlateCarree())
+    ax.set_xlabel("Longitude")
     ax.set_yticks(np.arange(float(peak_map.lat.min()),
                             float(peak_map.lat.max()), 0.5),
                 crs=ccrs.PlateCarree())
+    ax.set_ylabel("Latitude")
 
     # Format tick labels
     lon_formatter = cticker.LongitudeFormatter()
@@ -134,8 +154,9 @@ def visualize_peak_hour(filepath):
 
     
     # Save and close
-    plt.savefig(f"output/hour_max_cloud_cover_month_{month}.png", bbox_inches="tight")
+    plt.savefig(f"output/hour_max_cloud_cover_month_{month}_median.png", bbox_inches="tight")
     plt.close()
+    
 
 def extract_clara_albedo(data_folder, output_csv, target_lon=5.33):
     """
@@ -1122,12 +1143,12 @@ if __name__ == "__main__":
 
     
     # --------------------- Data exploration --------------------------------
-    inspect_file(monthly_longterm_sim_results, "mixed_sky_ghi")
+    inspect_file("data/raw/comet2-CFC-2018/CFChm201807121900002UD1000101UD.nc", "CFC")
     #plot_claas3_file(aux_file, sample_file, "cth")
     #plot_monthly_mean_albedos(clara_csv=clara_csv, s5p_csv=s5p_csv, outpath=outpath)
     #crop_to_roi("data/raw/claas-3_test/*.nc", "data/raw/claas-3_test_small_roi.nc", aux_filepath = aux_file)
     #cfc_diurnal_cycle_monthly("data/comet2_roi_month.nc")
-    #visualize_peak_hour("data/comet2_roi_month.nc")
+    visualize_peak_hour()
        
     # ----------------------- Extract albedo and cloud properties ----------------------
     #add_claas3_variable_to_cloud_cover_table(claas_folder_cpp, aux_file, s2_csv, 

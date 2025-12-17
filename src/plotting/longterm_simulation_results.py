@@ -1285,54 +1285,81 @@ def calculate_energy_for_locations(monthly_irradiation_spatial_filepath, A=25, e
             print(f"Month {m:2d}:  {E_m:.1f} kWh")
         print(f"Annual E: {annual_energy[name]:.1f} kWh")
 
+    # -------------------------
+    # Print annual difference relative to City Center
+    # -------------------------
+    city_center_E = annual_energy["City Center"]
+    print("\n================ Annual PV Energy Difference Relative to City Center (%) ================")
+    for name, E in annual_energy.items():
+        diff_percent = (E - city_center_E) / city_center_E * 100
+        print(f"{name:12s}: {diff_percent:+.2f}%")
 
     # -------------------------
     # Plotting
     # -------------------------
-        fig, (ax1, ax2) = plt.subplots(
-        1, 2, figsize=(16,6),
-        gridspec_kw={'width_ratios':[3,1]}
-    )
-
-    months = np.arange(1, 13)
-    month_labels = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-
-    markers = ["o","s","^","D","v","X"]
+    fig, (ax1, ax2) = plt.subplots( 1, 2, figsize=(16,6), gridspec_kw={'width_ratios':[3,1]} ) 
+    months = np.arange(1, 13) 
+    month_labels = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"] 
     line_colors = ["#FF7733", "#BC96E6", "#D81E5B", "#A6DD72", "#255F85", "#22DB7B"]
+    
+    # --- Left subplot: monthly barplot of differences from City Center ---
 
-    # --- Left subplot: monthly curves ---
+    city_ref = np.array(monthly_energy["City Center"])
+
+    # Prepare bar width and offsets
+    n_locations = len(locations)
+    bar_width = 0.12
+    offsets = np.linspace(-0.35, 0.35, n_locations)
+
     for idx, (name,_,_) in enumerate(locations):
-        line, = ax1.plot(
-            months,
-            monthly_energy[name],
-            marker=markers[idx % len(markers)],
-            linewidth=2,
+        vals = np.array(monthly_energy[name])
+        diff_percent = (vals - city_ref) / city_ref * 100
+        
+        ax1.bar(
+            months + offsets[idx],
+            diff_percent,
+            width=bar_width,
             label=name,
-            color=line_colors[idx]
+            color=line_colors[idx],
+            alpha=0.9
         )
 
-    # Month labels
+    # Zero reference line (City Center)
+    ax1.axhline(0, color="black", linewidth=1.4)
+
+    # X-axis labels
     ax1.set_xticks(months)
     ax1.set_xticklabels(month_labels)
 
-    # Vertical gridlines at each month
+    # Gridlines at month boundaries
     for m in months:
         ax1.axvline(m, color="gray", alpha=0.15, linewidth=1)
 
-    ax1.grid(True, axis="y", alpha=0.3)  # horizontal gridlines
+    ax1.grid(True, axis="y", alpha=0.3)
     ax1.set_xlabel("Month")
-    ax1.set_ylabel("PV energy (kWh)")
-    ax1.set_title("Monthly PV Energy per Location")
+    ax1.set_ylabel("Relative Difference from City Center (%)")
+    ax1.set_title("Monthly PV Energy Difference Relative to City Center")
     ax1.legend()
+
 
     # --- Right subplot: annual barplot with matching colors ---
     names = [name for name,_,_ in locations]
     annual_vals = [annual_energy[name] for name in names]
 
-    ax2.bar(names, annual_vals, color=line_colors)
+    bars = ax2.bar(names, annual_vals, color=line_colors)
     ax2.set_ylabel("Annual PV Energy (kWh)")
     ax2.set_title("Annual PV Energy")
     ax2.set_xticklabels(names, rotation=45, ha='right')
+    
+    # Add bar height labels on top
+    for bar in bars:
+        height = bar.get_height()
+        ax2.text(
+            bar.get_x() + bar.get_width()/2,  # x position: center of bar
+            height + 50,                      # y position: slightly above the bar
+            f"{height:.0f}",                  # label text
+            ha='center', va='bottom', fontsize=10
+        )
 
     plt.tight_layout()
     outpath = "output/energy_monthly_annual_6locations.png"
