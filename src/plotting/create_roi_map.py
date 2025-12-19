@@ -1,17 +1,14 @@
+# ====================================================================
+# Create plot for overview of the study area (including elevation, 
+# building footprints, coastline, weather station locations and 
+# district/islands landmarks)
+# ====================================================================
+
 import rasterio
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
-import geopandas as gpd
-from rasterio.features import dataset_features
-from shapely.affinity import scale
-from shapely.geometry import shape
 import numpy as np
 from src.plotting.high_res_maps import plot_single_tif
-
-def plot_map_with_elevation(dsm_filepath, coastline_filepath, roads_filepath, buildings_filepath):
-    """Plot DSM elevation with coastline, roads and buildings (clipped to DSM extent)"""
-
-    plot_single_tif(dsm_filepath)
 
 
 def summarize_dsm(dsm_filepath):
@@ -54,17 +51,16 @@ if __name__ == "__main__":
 
     cmap = plt.cm.terrain
     norm = Normalize(vmin=0, vmax=800)  # meters
-    landmarks = {
-        # Islands / Municipal areas
-        "Litlesotra": (60.35858, 5.11),       # from Mapcarta / Wikipedia :contentReference[oaicite:0]{index=0}
-        "Askøy": (60.46, 5.16),           # from LatLong.net :contentReference[oaicite:1]{index=1}
-        "Sotra": (60.29, 5.105),                # approximate from Sotra location listing :contentReference[oaicite:2]{index=2}
-        # Outskirts / suburbs
-        "Mjølkeråen": (60.4885, 5.265),          # from Mapcarta :contentReference[oaicite:3]{index=3}
-        # Island northeast of Bergen
-        "Osterøy": (60.47, 5.49),               # from Wikipedia coordinates of the island :contentReference[oaicite:4]{index=4}
-        "Gullfjellet →": (60.34, 5.48)
+    landmarks = {                       # locations to plot for orientation
+        "Litlesotra": (60.35858, 5.11),       # from mapcarta/google maps
+        "Askøy": (60.46, 5.16),           
+        "Sotra": (60.29, 5.105),                
+        "Mjølkeråen": (60.4885, 5.265),          
+        "Osterøy": (60.47, 5.49),               
+        "Gullfjellet →": (60.34, 5.48)          
     }
+    
+    # Geojson file with building footprints, downloaded from Open Street Map
     buildings_path = "data/raw/building_footprints_bergen.geojson"
     plot_single_tif(dsm_filepath, outpath="output/bergen_roi_map.png", 
                     title="Study Area (Bergen)", 

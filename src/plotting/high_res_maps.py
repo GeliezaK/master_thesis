@@ -1,3 +1,9 @@
+# ========================================================================
+# Various plotting functions for monthly/seasonal plots of some spatial
+# variable (cloud cover, ghi, irradiation,...) including coastline,
+# lat/lon grid, and ground station location. 
+# ========================================================================
+
 import rasterio
 import numpy as np
 import os
@@ -7,15 +13,16 @@ import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 import matplotlib.patheffects as PathEffects
 import cartopy.crs as ccrs
-import cartopy.feature as cfeature
 from cartopy.mpl.ticker import LongitudeFormatter, LatitudeFormatter
 from shapely.geometry import Point
-from netCDF4 import Dataset, date2num, num2date
+from netCDF4 import Dataset
 import geopandas as gpd
 from shapely.geometry import box
-from matplotlib.ticker import FormatStrFormatter
-from matplotlib.colors import BoundaryNorm, ListedColormap
 from src.plotting import set_paper_style
+
+# ------------------------------------------
+# Set-up 
+# ------------------------------------------
 
 set_paper_style()
 
@@ -119,6 +126,7 @@ def plot_landmarks(ax, coast_clipped, gdf):
 
 
 def read_image_and_append(path, data_list): 
+    """Read .tif image from path and append to data_list."""
     with rasterio.open(path) as src:
         data = src.read(1).astype(float) # convert to %
         nodata = src.nodata
@@ -130,6 +138,9 @@ def read_image_and_append(path, data_list):
  
  
 def plot_band_with_extent(data, left, right, bottom, top, outpath):
+    """Plot single band data with extent information (left, right, bottom, top).
+    Save plot to outpath. """
+
     print(f"Extent (left, right, bottom, top): ({left}, {right}, {bottom}, {top}) ")
     print(f"Data shape: {data.shape}")
     # Create figure
@@ -137,12 +148,14 @@ def plot_band_with_extent(data, left, right, bottom, top, outpath):
     plt.imshow(
         data,
         extent=(left, right, bottom, top),
-        cmap='gray',  # or 'viridis', 'Blues', etc.
-        origin='upper'
+        cmap='gray',  
+        origin='upper', 
+        vmin=0, 
+        vmax=1
     )
     plt.xlabel("Longitude")
     plt.ylabel("Latitude")
-    plt.title("")  # no title as requested
+    plt.title("")  
 
     # Save to outpath
     plt.savefig(f"{outpath}.png", dpi=150, bbox_inches='tight')
@@ -150,6 +163,9 @@ def plot_band_with_extent(data, left, right, bottom, top, outpath):
            
         
 def plot_tif_with_latlon(tif_path, outpath):
+    """Read .tif data from tif_path, plot with Latitude (x-axis) and 
+    longitude (y-axis) information and save to outpath.
+    """
     # Open raster file
     with rasterio.open(tif_path) as src:
         data = src.read(1)
@@ -164,31 +180,41 @@ def plot_tif_with_latlon(tif_path, outpath):
 def plot_monthly_results(source, var_name, outpath, title, colorbar_ylabel, histogram_title, dpi=150, 
                          cmap = None, norm=None):
     """
-    Plot monthly cloud cover or ghi maps (12 subplots) + histograms.
-    
+    Plot monthly spatial maps and corresponding histograms for a given variable.
+
+    This function generates 12 monthly subplots of spatial data (e.g., cloud cover or GHI)
+    and saves the figure. It also creates histograms for each month showing the distribution
+    of the variable values.
+
     Parameters
     ----------
     source : dict or str
-        - dict: {month_number: filepath, ...}
-        - str: path to .nc file containing variables "month" and "shadow_frequency"
+        - dict: mapping month number (1–12) to file paths containing monthly data
+        - str: path to a NetCDF file containing the variable `var_name` with dimension "month".
+    var_name : str
+        Name of the variable to plot from the NetCDF file (ignored if `source` is a dict).
     outpath : str
-        Output filepath for map plot (histograms will be saved separately)
+        File path to save the monthly map figure.
     title : str
-        Title of the map plot
+        Title for the map figure.
     colorbar_ylabel : str
-        Label for the colorbar and histogram x-axis
+        Label for the colorbar in the map figure and x-axis in histograms.
     histogram_title : str
-        Title of the histogram plot
-    dpi : int
-        Resolution of output figure
-    extent : list [lon_min, lon_max, lat_min, lat_max], optional
-        Map extent
-    months_map : dict
-        Mapping from month index (1–12) to month name
-    coast_clipped, gdf : optional
-        GeoDataFrames for plotting landmarks/borders
+        Title for the histogram figure.
+    dpi : int, optional
+        Resolution of the output figures. Default is 150.
+    cmap : matplotlib.colors.Colormap, optional
+        Colormap for the maps and histograms. Default is "viridis".
+    norm : matplotlib.colors.Normalize, optional
+        Normalization for the color scale. If None, automatically set from data.
+
+    Outputs
+    -------
+    Saves two figures to disk:
+    - Monthly spatial maps with shared color scale (saved to `outpath`)
+    - Histograms of monthly values (saved to `*_histograms.png`)
     """
-    
+
     monthly_data = []
 
     # -------------------------------------------------------------------------
@@ -315,20 +341,39 @@ def plot_monthly_results(source, var_name, outpath, title, colorbar_ylabel, hist
 
 def plot_seasonal_results(source, var_name, count_var, outpath, title, colorbar_label, histogram_title, dpi=150, cmap=None):
     """
-    Compute and plot seasonal mean maps + histograms from monthly data.
+    Compute and plot seasonal mean maps and histograms from monthly data.
 
-    Supports:
-    - A dict of monthly image paths, or
-    - A NetCDF file with monthly data (shape: 12 x lat x lon)
+    This function aggregates monthly spatial data into four meteorological seasons 
+    (Winter: Dec–Feb, Spring: Mar–May, Summer: Jun–Aug, Autumn: Sep–Nov) using 
+    monthly counts as weights. It then generates seasonal mean maps and histograms.
 
-    The function aggregates months into seasons using _monthly_count
-    (number of valid images) as weights.
-    
-    Seasons:
-        - Winter: Dec, Jan, Feb
-        - Spring: Mar, Apr, May
-        - Summer: Jun, Jul, Aug
-        - Autumn: Sep, Oct, Nov
+    Parameters
+    ----------
+    source : str or dict
+        - str: Path to a NetCDF file containing `var_name` (monthly data) and `count_var` (monthly observation counts)
+        - dict: {season_name: filepath} with pre-aggregated seasonal images
+    var_name : str
+        Variable name in the NetCDF file to process (ignored if `source` is a dict)
+    count_var : str
+        Name of the monthly counts variable in the NetCDF file used for weighting seasonal means
+    outpath : str
+        File path to save seasonal map figure
+    title : str
+        Title for the seasonal map figure
+    colorbar_label : str
+        Label for the colorbar in map plots and x-axis in histograms
+    histogram_title : str
+        Title for the histogram figure
+    dpi : int, optional
+        Resolution of output figures (default: 150)
+    cmap : matplotlib.colors.Colormap, optional
+        Colormap for the maps and histograms (default: "viridis")
+
+    Outputs
+    -------
+    Saves two figures to disk:
+    - Seasonal mean maps (saved to `outpath`)
+    - Seasonal histograms of pixel values (saved to `*_histograms.png`)
     """
 
     # -------------------------------------------------------------------------
@@ -667,103 +712,6 @@ def plot_seasonal_comparison_maps(
     print(f"✅ Seasonal comparison histograms saved to {hist_outpath}")
 
 
-    
-def plot_yearly_cloud_cover(path, outpath):
-    """Plot high-resolution map with mean cloud cover for each year."""
-    yearly_data = []
-
-    # List of years 
-    years = range(2016, 2025)
-
-    # Read images for each year
-    for year in years:
-        path = os.path.join(folder, f"Cloud_mask_mean_{year}_mixed.tif")
-        print(f"{year}")
-        read_image_and_append(path, yearly_data)
-
-    # Determine shared color scale (min/max) across all years
-    vmin = np.nanmin([np.nanmin(d) for d in yearly_data])
-    vmax = np.nanmax([np.nanmax(d) for d in yearly_data])
-
-
-    # Plot in 3 rows × 3 columns (9 years)
-    fig, axes = plt.subplots(3, 3, figsize=(14,14), subplot_kw={'projection': ccrs.PlateCarree()})
-    fig.suptitle("Yearly Cloud Frequency Maps (mean)", fontsize=16)
-
-    # plot for each season
-    for idx, year in enumerate(years):
-        row, col = divmod(idx, 3)
-        ax = axes[row, col]
-
-        ax.set_title(f"{year}", fontsize=12)
-        ax.set_extent(extent, crs=ccrs.PlateCarree())
-        
-        img = ax.imshow(yearly_data[idx], origin='upper', transform=ccrs.PlateCarree(), extent=extent,
-                        cmap='viridis', vmin=vmin, vmax=vmax)
-
-        plot_landmarks(ax, coast_clipped, gdf)        
-
-            
-
-    # Add a single colorbar to the right of all plots
-    # [left, bottom, width, height] in figure coordinates
-    cbar_ax = fig.add_axes([0.92, 0.25, 0.015, 0.5])
-    fig.colorbar(img, cax=cbar_ax, label="Cloud Frequency (%)")
-
-    plt.subplots_adjust(wspace=0.05, hspace=0.2, right=0.9)
-
-    plt.savefig(outpath)
-    print(f"Mean yearly cloud cover plot saved to {outpath}.")
-
-
-    # Pixel values histogramm for each year
-    fig, axes = plt.subplots(3, 3, figsize=(14,14))
-    fig.suptitle("Yearly Cloud Frequency Histograms", fontsize=16)
-
-    # Define colormap and normalization
-    cmap = cm.get_cmap('viridis')
-    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
-
-    for idx, year in enumerate(years):
-        row, col = divmod(idx, 3)
-        ax = axes[row, col]
-        data = yearly_data[idx].flatten()
-        
-        print(f"Calculating histogramm for {year}...")
-
-        # Calculate stats
-        min_val = np.nanmin(data)
-        max_val = np.nanmax(data)
-        mean_val = np.nanmean(data)
-        diff = (max_val - min_val)  # in %
-        
-        # Histogram data
-        counts, bins = np.histogram(data, bins=30, range=(vmin, vmax))
-        bin_centers = 0.5 * (bins[:-1] + bins[1:])
-        bar_colors = [cmap(norm(b)) for b in bin_centers]
-
-        # Plot histogram
-        ax.bar(bin_centers, counts, width=(bins[1] - bins[0]), color=bar_colors, edgecolor='black')
-        ax.axvline(mean_val, color='red', linewidth=1.5, label=f"Mean: {mean_val}")
-        ax.set_title(f"{year}", fontsize=12)
-        
-        # Add stat box in top-right
-        stats_text = f"min: {min_val:.1f}\nmax: {max_val:.1f}\nΔ: {diff:.1f}%"
-        ax.text(0.95, 0.95, stats_text, transform=ax.transAxes,
-                fontsize=9, verticalalignment='top', horizontalalignment='right',
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="gray", alpha=0.8))
-
-        ax.set_xlim(vmin, vmax)
-        ax.set_xlabel("Cloud Frequency (%)")
-        ax.set_ylabel("Pixel Count")
-        ax.grid(True, linestyle='--', alpha=0.5)
-
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-    hist_outpath = os.path.splitext(outpath)[0] + "_histograms.png"
-    plt.savefig(hist_outpath)
-    print(f"Mean yearly cloud cover plot (pixel value histograms) saved to {hist_outpath}.")
-
-
 def plot_single_tif(
     path,
     outpath,
@@ -835,6 +783,11 @@ def plot_single_band(
         Colormap to use (e.g. plt.cm.terrain, plt.cm.viridis).
     norm : matplotlib.colors.Normalize, optional
         Normalization for the colormap (e.g. BoundaryNorm, Normalize).
+    extra_landmarks : dict, optional
+        Dictionary of landmark names and (lat, lon) tuples to plot
+        Example: {"Askøy": (60.4, 5.15), "Arna": (60.42, 5.45)}
+    extra_layers : list, optional
+        List of file paths to GeoJSON/SHP layers to overlay (roads, buildings, etc.)
     """
 
     min_value = np.nanmin(band)
@@ -912,31 +865,3 @@ def plot_single_band(
     plt.savefig(outpath, bbox_inches="tight", dpi=300)
     plt.close()
     print(f"Band plot saved as PNG to {outpath}.")
-
-
-def plot_single_tif_histogram(path, outpath, title, xlabel, ylabel):
-    with rasterio.open(path) as src:
-        band1 = src.read(1, masked=True) # remove NaN data
-        band1 = band1 
-
-    plot_single_band_histogram(band1, outpath, title, xlabel, ylabel)
-    
-    
-def plot_single_band_histogram(band, outpath, title, xlabel, ylabel):
-    min_value = np.nanmin(band)
-    max_value = np.nanmax(band)
-    print(f"Min pixel value: {min_value}, max pixel value: {max_value}")
- 
-    # Histogram of pixel values 
-    hist_outpath = os.path.splitext(outpath)[0] + ".png"
-    plt.figure(figsize=(8, 4))
-    plt.hist(band.flatten(), bins=50, color='skyblue', edgecolor='black')
-    plt.title(title)
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-    plt.grid(True, linestyle='--', alpha=0.5)
-    plt.tight_layout()
-    plt.savefig(hist_outpath)
-    print(f"Tif pixel value histogram saved to {hist_outpath}.")
-
-    

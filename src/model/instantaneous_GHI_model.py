@@ -1,3 +1,7 @@
+# ====================================================================
+# Simulate instantaneous Global Horizontal Irradiance 
+# ====================================================================
+
 import rasterio
 from rasterio.transform import from_origin
 from tqdm import tqdm
@@ -32,6 +36,7 @@ def get_closest_lut_entry(lut, unique_values, doy, hour, albedo, altitude_km,
         {'direct_clear': ..., 'diffuse_clear': ..., 'direct_cloudy': ..., 'diffuse_cloudy': ...}
         If cloud parameters are not provided, cloudy values are set to None.
     """
+    
     # Assert input params are correct
     if cloud_top_km is not None:
         assert cloud_top_km <= 50, f"Cloud Top Height is larger than 50 km ({cloud_top_km})! Did you convert m to km?"
@@ -121,7 +126,11 @@ def get_closest_lut_entry(lut, unique_values, doy, hour, albedo, altitude_km,
     
     return res_dict
 
+
 def build_ghi_clear_lut(path = "data/processed/LUT/claas3/LUT.csv"):
+    """Build full LUT for clear sky entries as np.array (faster than multiple
+    .csv file reads or keeping the full LUT in memory)."""
+    
     ghi_clear_table = np.full((365, 24), np.nan)
     lut = pd.read_csv(path)
     variables = ["doy", "hour", "albedo", "altitude_km", "cloud_top_km", "cot", "cloud_phase"]
@@ -155,7 +164,13 @@ def idx_from_time(times_array, timestamp, by_time_of_year=False, max_delta=1.0, 
         Maximum allowed time difference in hours (for hour-of-day comparison).
     verbose : bool, optional
         Print additional information.
+        
+    Returns 
+    -------
+    idx : int
+        Index of the closest observation to timestamp in times_array.
     """
+    
     # Ensure timestamp is timezone-free and numpy datetime64
     if hasattr(timestamp, "tzinfo") and timestamp.tzinfo is not None:
         timestamp = timestamp.tz_convert("UTC").tz_localize(None)
@@ -223,7 +238,49 @@ def idx_from_time(times_array, timestamp, by_time_of_year=False, max_delta=1.0, 
 
 
 def get_cloud_properties(row, monthly_medians, month, verbose=False):
-    """Return COT, CTH (in km), and CPH (water/ice) for a given row in pandas dataframe."""
+    """
+    Get representative cloud optical and physical properties for a single observation.
+
+    This function extracts cloud optical thickness (COT), cloud top height (CTH),
+    and cloud phase (CPH) from a pandas DataFrame row. If small-roi (region-of-interest)
+    values are missing, large-roi values are used as a fallback.
+    If both are unavailable, monthly median values are used.
+
+    Parameters
+    ----------
+    row : pandas.Series
+        A row from a pandas DataFrame containing cloud property statistics.
+        Expected fields include:
+        - 'cot_median_small', 'cot_median_large'
+        - 'cth_median_small', 'cth_median_large'
+        - 'cph_median_small', 'cph_median_large'
+
+    monthly_medians : pandas.DataFrame
+        DataFrame containing monthly median cloud properties used as fallback.
+        Must include the columns:
+        - 'month'
+        - 'cot_median_small'
+        - 'cth_median_small'
+        - 'cph_median_small'
+
+    month : int
+        Month index (1–12) used to select fallback values from `monthly_medians`.
+
+    verbose : bool, optional
+        If True, print the selected cloud properties to stdout.
+        Default is False.
+
+    Returns
+    -------
+    COT : float
+        Cloud Optical Thickness (dimensionless).
+
+    CTH : float
+        Cloud Top Height in kilometers.
+
+    CPH : str
+        Cloud Phase, either "water" or "ice".
+    """
     
     # --- COT ---
     if not pd.isna(row["cot_median_small"]):
@@ -256,27 +313,83 @@ def get_cloud_properties(row, monthly_medians, month, verbose=False):
         print(f"cloud props: COT {COT:.2f}, CTH {CTH:.2f}, CPH {CPH}")
     return COT, CTH, CPH
 
-def nc_to_raster_meta(ds):
-    lat = ds["lat"].values
-    lon = ds["lon"].values
-    var = ds["sw_dir_cor"].isel(time=0).values
-    
-    nrows, ncols = var.shape[-2], var.shape[-1]
-
-    # Assuming regular lat/lon grid
-    res_lon = (lon[-1] - lon[0]) / (ncols - 1)
-    res_lat = (lat[-1] - lat[0]) / (nrows - 1)
-
-    # Top-left origin transform
-    transform = from_origin(lon.min(), lat.max(), res_lon, abs(res_lat))
-
-    return transform, (nrows, ncols), (lon.min(), lat.max(), lon.max(), lat.min())
-
 
 def total_ghi_from_sat_imgs(cloud_shadow_path, cloud_cover_filepath, LUT_filepath,
                                sw_cor_path, out_nc_file,
                                mixed_threshold, overcast_threshold, verbose=False):
-    """Compute total GHI from satellite images and save directly to NetCDF per iteration."""
+    """
+    Compute total surface Global Horizontal Irradiance (GHI) from satellite-derived
+    cloud information and radiative transfer lookup tables, and store the results
+    incrementally in a NetCDF file.
+
+    The function processes a time series of satellite observations and classifies
+    each timestep into clear-sky, overcast, or mixed cloud conditions based on
+    large-scale cloud cover thresholds. For each timestep, direct and diffuse
+    irradiance components are obtained from a precomputed radiative transfer
+    lookup table (LUT) and combined with spatial correction factors and cloud
+    shadow information to derive total GHI fields.
+
+    Results are written incrementally to a NetCDF file, allowing safe interruption
+    and restart without recomputation of previously processed timesteps.
+
+    Parameters
+    ----------
+    cloud_shadow_path : str
+        Path to a NetCDF file containing time-resolved cloud shadow masks
+        (boolean or binary), including dimensions ``time``, ``lat``, and ``lon``.
+
+    cloud_cover_filepath : str
+        Path to a CSV file containing per-timestep cloud properties and statistics
+        derived from satellite imagery. Must include observation timestamps,
+        cloud cover fractions, cloud optical properties, and surface albedo
+        information.
+
+    LUT_filepath : str
+        Path to a CSV file containing a radiative transfer lookup table (LUT)
+        with clear-sky and cloudy-sky direct and diffuse irradiance components.
+
+    sw_cor_path : str or None
+        Path to a NetCDF file containing shortwave direct irradiance correction
+        factors accounting for topography or terrain shading. If ``None``, no
+        correction is applied (output variable is global horizontal irradiance) 
+        and clear-sky timesteps are skipped.
+
+    out_nc_file : str
+        Path to the output NetCDF file where total GHI fields are written.
+        The file is created if it does not exist and appended to otherwise.
+
+    mixed_threshold : float
+        Cloud cover fraction below which a timestep is classified as clear-sky.
+        Values between ``mixed_threshold`` and ``overcast_threshold`` are treated
+        as mixed sky type. Values lower than ``mixed_threshold`` are 
+        classified as clear sky type.
+
+    overcast_threshold : float
+        Cloud cover fraction above which a timestep is classified as overcast.
+
+    verbose : bool, optional
+        If True, print progress information and diagnostic messages during
+        processing. Default is False.
+
+    Outputs
+    -------
+    NetCDF file
+        A NetCDF file written to ``out_nc_file`` containing:
+        - ``time`` : time dimension in hours since a reference date
+        - ``lat``  : latitude coordinates
+        - ``lon``  : longitude coordinates
+        - ``GHI_total`` : total surface Global Horizontal Irradiance
+          (W m⁻²) for each timestep and grid cell
+
+    Notes
+    -----
+    - Each timestep is processed independently and written immediately to disk,
+      enabling efficient handling of large datasets.
+    - Existing timesteps in the output NetCDF file are detected and skipped to
+      avoid duplication.
+    - Cloud optical thickness, cloud top height, and cloud phase are inferred
+      per timestep with fallback to monthly climatological medians when necessary.
+    """
 
     # -----------------------------------------------------------------------------
     # Initialize
@@ -515,6 +628,10 @@ def total_ghi_from_sat_imgs(cloud_shadow_path, cloud_cover_filepath, LUT_filepat
    
    
 def simulate_stations_pixels_corrected(cloud_cover_filepath, lut_filepath, cloud_shadow_path, verbose=False):
+    """Correct the simulation results for Flesland and Florida pixels (set direct shortwave correction factor
+    to 1.0, i.e. calculate GHI). Add to the table in cloud_cover_filepath new columns florida_diffuse, 
+    florida_direct, flesland_diffuse and flesland_direct to store results for these two pixels explicitely."""
+    
     sim_vs_obs = pd.read_csv(cloud_cover_filepath)
     sim_vs_obs["date"] = pd.to_datetime(sim_vs_obs["date"], format="%Y-%m-%d")
     sim_vs_obs["month"] = sim_vs_obs["date"].dt.month
@@ -668,9 +785,9 @@ if __name__ == "__main__":
     # Paths
     cloud_cover_table_filepath = "data/processed/s2_cloud_cover_table_small_and_large_with_stations_data.csv"
     DSM_filepath = "data/processed/bergen_dsm_10m_epsg4326.tif"
-    sw_cor_filepath = "data/processed/sw_cor/sw_cor_bergen.nc" # new sw_cor_dir with mean reducer
+    sw_cor_filepath = "data/processed/sw_cor/sw_cor_bergen.nc" # direct sw correction factor for mean reducer dsm
     s2_cloud_mask_folderpath = "data/raw/S2_cloud_mask_large"
-    lut_filepath = "data/processed/LUT/claas3/LUT.csv" # new LUT with Claas3 cloud properties
+    lut_filepath = "data/processed/LUT/claas3/LUT.csv" # LUT with Claas3 cloud properties
     cloud_shadow_filepath = "data/processed/cloud_shadow_thresh40.nc"
     cloud_props = pd.read_csv(cloud_cover_table_filepath) 
     outpath_new_florida_flesland_sim = "data/processed/s2_cloud_cover_with_stations_with_pixel_sim.csv"
@@ -682,8 +799,8 @@ if __name__ == "__main__":
                                 sw_cor_path=None, out_nc_file=f"data/processed/simulated_ghi_without_terrain_only_mixed_{res}m.nc",
                                 mixed_threshold=1, overcast_threshold=99, verbose=False)
 
-    """ df = simulate_stations_pixels_corrected(cloud_cover_filepath=cloud_cover_table_filepath,
+    df = simulate_stations_pixels_corrected(cloud_cover_filepath=cloud_cover_table_filepath,
                                        lut_filepath=lut_filepath, 
                                        cloud_shadow_path=cloud_shadow_filepath,
                                        verbose=False)
-    df.to_csv(outpath_new_florida_flesland_sim, index=False) """
+    df.to_csv(outpath_new_florida_flesland_sim, index=False) 

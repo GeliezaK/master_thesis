@@ -4,13 +4,16 @@ import numpy as np
 import calendar
 import statsmodels.api as sm
 from scipy.stats import wasserstein_distance
-from preprocessing.quality_control_flag_stations_data import flag_observations
-from preprocessing.merge_station_obs_with_sim import extract_pixel_by_location
+from src.preprocessing.quality_control_flag_stations_data import flag_observations
+from src.preprocessing.merge_station_obs_with_sim import extract_pixel_by_location
 from src.plotting import STATION_COLORS, set_paper_style, SKY_TYPE_COLORS
 
 set_paper_style()
 
 def flag_stations_data(stations_data_path):
+    """Apply quality control criteria by Grini (2015) https://hdl.handle.net/11250/292854 
+    to the hourly mean station data. """
+    
     # Load full dataset
     stations_df = pd.read_csv(stations_data_path)
     stations_df["datetime"] = pd.to_datetime(stations_df["timestamp"], utc=True)
@@ -72,125 +75,30 @@ def flag_stations_data(stations_data_path):
     return df_out
 
 
-def plot_doy_vs_daily_mean_ghi(stations_data_path, daily_sim_monthly_path, daily_sim_annual_path):
-
-    # ---------------------------------------------------------
-    # Load input data
-    # ---------------------------------------------------------
-    stations = pd.read_csv(stations_data_path, parse_dates=["datetime"])
-    sim_monthly = pd.read_csv(daily_sim_monthly_path)
-    sim_annual = pd.read_csv(daily_sim_annual_path)
-
-    # ---------------------------------------------------------
-    # Prepare STATION daily GHI data
-    # ---------------------------------------------------------
-    stations["date"] = stations["datetime"].dt.date
-    stations["doy"] = stations["datetime"].dt.dayofyear
-    stations["month"] = stations["datetime"].dt.month
-
-    # Compute *daily* mean GHI for each station
-    station_daily = (
-        stations.groupby(["station", "date", "doy"])["value"]
-        .mean()
-        .reset_index()
-        .rename(columns={"value": "GHI_daily_mean"})
-    )
-    station_daily["GHI_daily_kWh"] = station_daily["GHI_daily_mean"] * 24 / 1000 # convert to kWh
-
-    # ---------------------------------------------------------
-    # Compute percentiles per DOY for each station
-    # ---------------------------------------------------------
-    def compute_GHI_daily_Wh_percentiles(df):
-        return (
-            df.groupby("doy")["GHI_daily_kWh"]
-            .agg(
-                min=lambda x: np.nanmin(x),
-                p25=lambda x: np.percentile(x, 25),
-                p50=lambda x: np.percentile(x, 50),  
-                p75=lambda x: np.percentile(x, 75),
-                max=lambda x: np.nanmax(x),
-            )
-            .reset_index()
-        )
-
-    stat_flesland = compute_GHI_daily_Wh_percentiles(
-        station_daily[station_daily["station"] == "Flesland"]
-    )
-    stat_florida = compute_GHI_daily_Wh_percentiles(
-        station_daily[station_daily["station"] == "Florida"]
-    )
-
-    # ---------------------------------------------------------
-    # Prepare SIMULATION daily GHI data
-    # --------------------------------------------------------- 
-    
-    sim_monthly["GHI_daily_kWh"] = sim_monthly["GHI_daily_Wh"] / 1000 # convert to kWh
-    sim_annual["GHI_daily_kWh"] = sim_annual["GHI_daily_Wh"] / 1000
-    
-    sim_monthly_stats = compute_GHI_daily_Wh_percentiles(sim_monthly)
-    sim_annual_stats = compute_GHI_daily_Wh_percentiles(sim_annual)
-
-    # ---------------------------------------------------------
-    # Plotting
-    # ---------------------------------------------------------
-    plt.figure(figsize=(14, 7))
-
-    def add_line_and_shade(df, label, color):
-        # median line
-        plt.plot(df["doy"], df["p50"], color=color, label=label, linewidth=2)
-        # shaded IQR
-        #plt.fill_between(df["doy"], df["p25"], df["p75"], color=color, alpha=0.2)
-        # outer percentile band
-        plt.fill_between(df["doy"], df["min"], df["max"], color=color, alpha=0.12)
-
-    # Stations
-    add_line_and_shade(stat_flesland, "Flesland", "tab:red")
-    add_line_and_shade(stat_florida, "Florida", "tab:orange")
-
-    # Simulations
-    add_line_and_shade(sim_monthly_stats, "Model Monthly Mean k", "tab:green")
-    add_line_and_shade(sim_annual_stats, "Model Annual Mean k", "tab:blue")
-
-    plt.xlabel("Day of Year")
-    plt.ylabel("Daily Mean Solar Irradiation (kWh/m²)")
-    plt.title("Daily Mean Solar Irradiation vs Day of Year — Stations vs. Simulations")
-    
-    # ---------------------------------------------------------
-    # Add vertical month grid lines
-    # ---------------------------------------------------------
-    # DOY for first day of each month (non-leap year)
-    month_starts = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
-
-    for doy in month_starts:
-        plt.axvline(doy, color="grey", linestyle="--", alpha=0.35, linewidth=1)
-
-    # Add month labels
-    month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-
-    for doy, label in zip(month_starts, month_labels):
-        plt.text(doy + 1, plt.ylim()[1] * 0.98, label,
-                 rotation=0, fontsize=12, color="dimgray", va="top")
-    
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-
-    # ---------------------------------------------------------
-    # Save figure
-    # ---------------------------------------------------------
-    outpath = "output/monthly_mean_ghi_vs_doy_longterm_sim_vs_stations_minmax.png"
-    plt.tight_layout()
-    plt.savefig(outpath, dpi=150)
-    plt.close()
-
-    print(f"Figure saved to {outpath}.")
-    
-    
-    
 def plot_doy_vs_daily_mean_ghi_10day(stations_data_path,
                                      daily_sim_model1_path,
                                      daily_sim_model2_path, 
                                      daily_sim_model3_path):
+    """
+    Plot 10-day binned mean daily solar irradiation vs. day of year (DOY) 
+    for observational stations and multiple simulation models.
+
+    Parameters
+    ----------
+    stations_data_path : str
+        CSV file containing station measurements with columns 'station', 'datetime', and 'value'.
+    daily_sim_model1_path : str
+        CSV file with daily GHI output from simulation model 1.
+    daily_sim_model2_path : str
+        CSV file with daily GHI output from simulation model 2.
+    daily_sim_model3_path : str
+        CSV file with daily GHI output from simulation model 3, including Florida and Flesland columns.
+
+    Outputs
+    -------
+    Saves a figure showing median ± interquartile range of 10-day binned daily mean GHI 
+    for each station and model, with month markers along the x-axis.
+    """
 
     # ---------------------------------------------------------
     # Load input data
@@ -308,174 +216,6 @@ def plot_doy_vs_daily_mean_ghi_10day(stations_data_path,
     print(f"Figure saved to {outpath}.")
 
 
-def plot_monthly_boxplots_seasonal_monthly_variability(
-    stations_data_path,
-    sim_monthly_path,
-    sim_annual_path,
-    sim_spatial_path,
-    outpath="output/seasonal_monthly_boxplots.png"
-):
-
-    # ---------------------------------------------------------
-    # Load input data
-    # ---------------------------------------------------------
-    stations = pd.read_csv(stations_data_path, parse_dates=["datetime"])
-    sim_monthly = pd.read_csv(sim_monthly_path)
-    sim_annual = pd.read_csv(sim_annual_path)
-    sim_spatial = pd.read_csv(sim_spatial_path)
-
-    # ---------------------------------------------------------
-    # Prepare station daily GHI data
-    # ---------------------------------------------------------
-    stations["date"] = stations["datetime"].dt.date
-    stations["month"] = stations["datetime"].dt.month
-    stations["year"] = stations["datetime"].dt.year
-    stations["GHI_daily_mean"] = stations.groupby(["station", "date"])["value"].transform("mean")
-    stations["GHI_daily_kWh"] = stations["GHI_daily_mean"] * 24 / 1000
-    
-    station_monthly_means = stations.groupby(["station","year","month"])["GHI_daily_kWh"].mean().reset_index()
-
-    # ---------------------------------------------------------
-    # Prepare spatially uniform model daily data
-    # ---------------------------------------------------------
-    sim_monthly["GHI_daily_kWh"] = sim_monthly["GHI_daily_Wh"] / 1000
-    sim_annual["GHI_daily_kWh"] = sim_annual["GHI_daily_Wh"] / 1000
-    
-    sim_monthly_means = sim_monthly.groupby(["year", "month"])["GHI_daily_kWh"].mean().reset_index()
-    sim_annual_means = sim_annual.groupby(["year", "month"])["GHI_daily_kWh"].mean().reset_index()
-
-    # ---------------------------------------------------------
-    # Spatially resolved model: extract Florida + Flesland daily kWh
-    # ---------------------------------------------------------
-    sim_spatial["Florida_kWh"] = sim_spatial["Florida_GHI_daily_Wh_mean"] / 1000
-    sim_spatial["Flesland_kWh"] = sim_spatial["Flesland_GHI_daily_Wh_mean"] / 1000
-
-    # Only keep sky_type == "all-sky"
-    sim_spatial_all = sim_spatial[sim_spatial["sky_type"] == "all-sky"]
-
-    # ---------------------------------------------------------
-    # Season definitions
-    # ---------------------------------------------------------
-    seasons = {
-        "Winter": [12, 1, 2],
-        "Spring": [3, 4, 5],
-        "Summer": [6, 7, 8],
-        "Autumn": [9, 10, 11],
-    }
-
-    colors = ["orange", "red", "green", "blue", "purple", "brown"]
-    
-    # ---------------------------------------------------------
-    # Prepare figure
-    # ---------------------------------------------------------
-    fig, axes = plt.subplots(4, 1, figsize=(14, 18))
-    fig.subplots_adjust(hspace=0.35)
-
-    # ---------------------------------------------------------
-    # Loop through seasons
-    # ---------------------------------------------------------
-    for ax, (season_name, months) in zip(axes, seasons.items()):
-
-        # Collect boxplot data:
-        #   For each month in this season, create 6 datasets
-
-        all_box_data = []
-        x_labels = []
-
-        for m in months:
-
-            # 1. Station Florida
-            fl_station = station_monthly_means[(station_monthly_means["station"] == "Florida") &
-                                       (station_monthly_means["month"] == m)]["GHI_daily_kWh"]
-
-            # 2. Station Flesland
-            fs_station = station_monthly_means[(station_monthly_means["station"] == "Flesland") &
-                                       (station_monthly_means["month"] == m)]["GHI_daily_kWh"]
-
-            # 3. Spatially uniform model (monthly)
-            sm = sim_monthly_means[sim_monthly_means["month"] == m]["GHI_daily_kWh"]
-
-            # 4. Spatially uniform model (annual)
-            sa = sim_annual_means[sim_annual_means["month"] == m]["GHI_daily_kWh"]
-
-            # 5. Spatially resolved: Florida
-            rs_fl = sim_spatial_all[sim_spatial_all["month"] == m]["Florida_kWh"]
-
-            # 6. Spatially resolved: Flesland
-            rs_fs = sim_spatial_all[sim_spatial_all["month"] == m]["Flesland_kWh"]
-
-            all_box_data.append([fl_station, fs_station, sm, sa, rs_fl, rs_fs])
-            x_labels.append(calendar.month_abbr[m])
-
-        # Flatten into positions:
-        # Each month contributes 6 boxplots
-        flattened_data = []
-        positions = []
-        pos_counter = 0
-
-        for i, month_group in enumerate(all_box_data):
-            for dataset in month_group:
-                flattened_data.append(dataset)
-                positions.append(pos_counter)
-                pos_counter += 1
-            pos_counter += 1  # gap between months
-
-        bp = ax.boxplot(
-            flattened_data,
-            positions=positions,
-            patch_artist=True,
-            showfliers=False,
-            widths=0.6
-        )
-
-        # -----------------------------------------------------
-        # Color each box by model group
-        # -----------------------------------------------------
-        for i, box in enumerate(bp['boxes']):
-            color = colors[i % 6]   # repeat color sequence every 6 boxplots
-            box.set_facecolor(color)
-            box.set_alpha(0.5)
-            box.set_edgecolor(color)
-            box.set_linewidth(1.5)
-
-        for i, whisker in enumerate(bp['whiskers']):
-            whisker.set_color(colors[(i // 2) % 6])
-
-        for i, cap in enumerate(bp['caps']):
-            cap.set_color(colors[(i // 2) % 6])
-
-        for i, median in enumerate(bp['medians']):
-            median.set_color("black")
-            median.set_linewidth(1.4)
-
-        # Create x tick labels at month centers
-        month_centers = [(i * 7) + 2.5 for i in range(len(months))]
-        ax.set_xticks(month_centers)
-        ax.set_xticklabels(x_labels, fontsize=14)
-
-        ax.set_title(season_name, fontsize=16)
-        ax.set_ylabel("Mean Daily Irradiation (kWh/m²)", fontsize=14)
-        ax.grid(True, alpha=0.3)
-
-    # Legend
-    legend_labels = [
-        "Station Florida",
-        "Station Flesland",
-        "Model (2)",
-        "Model (1)",
-        "Model (3): Florida Pixel",
-        "Model (3): Flesland Pixel",
-    ]
-    fig.legend(legend_labels, loc="upper left", bbox_to_anchor=[0.1, 0.95], fontsize=12)
-
-    # Save figure
-    plt.tight_layout(rect=[0, 0, 0.92, 1])
-    plt.savefig(outpath, dpi=150)
-    plt.close()
-
-    print(f"Figure saved to {outpath}")
-
-
 def plot_monthly_boxplots_seasonal_daily_variability(
     stations_data_path,
     sim_model1_path,
@@ -483,6 +223,29 @@ def plot_monthly_boxplots_seasonal_daily_variability(
     sim_model3_path,
     outpath="output/seasonal_monthly_boxplots.png"
 ):
+    """
+    Plot monthly boxplots (in seasonal subplots) of daily irradiation
+    to compare observations from stations 
+    with simulated data from three models.
+
+    Parameters
+    ----------
+    stations_data_path : str
+        CSV file containing station measurements with 'station', 'datetime', and 'value' columns.
+    sim_model1_path : str
+        CSV file with daily irradiation from simulation model 1 (spatially uniform, annual k).
+    sim_model2_path : str
+        CSV file with daily irradiation from simulation model 2 (spatially uniform, monthly k).
+    sim_model3_path : str
+        CSV file with daily irradiation from simulation model 3 (spatially heterogeneous, monthly k).
+    outpath : str
+        File path to save the seasonal monthly boxplot figure.
+
+    Outputs
+    -------
+    Saves a figure showing boxplots of daily GHI for each month grouped by season, 
+    comparing stations and simulation models.
+    """
 
     # ---------------------------------------------------------
     # Load input data
@@ -520,7 +283,7 @@ def plot_monthly_boxplots_seasonal_daily_variability(
         "Autumn": [9, 10, 11],
     }
 
-    colors = ["orange", "red", "green", "blue", "purple", "brown"]
+    colors = ["orange", "red", "blue", "green", "purple", "brown"]
     
     # ---------------------------------------------------------
     # Prepare figure
@@ -636,6 +399,8 @@ def plot_ecdfs_daily_mean(stations_data_filepath,
                           daily_sim_model2_filepath,
                           daily_sim_model3_filepath,
                           outpath="output/ecdfs_daily_means_longterm_sim_vs_obs.png"): 
+    """Plot empirical cumulative distribution function of stations data and all simulations
+    from all three models for all-time mean daily irradiations. """
     # ---------------------------------------------------------
     # Load input data
     # ---------------------------------------------------------
@@ -697,82 +462,6 @@ def plot_ecdfs_daily_mean(stations_data_filepath,
     plt.savefig(outpath, dpi=300)
     print(f"Saved ecdf plot to {outpath}.")
     plt.close()
-    
-
-def plot_ecdfs_monthly_mean(stations_data_filepath, 
-                          daily_sim_model1_filepath, 
-                          daily_sim_model2_filepath,
-                          monthly_sim_model_filepath,
-                          outpath="output/ecdfs_monthly_means_longterm_sim_vs_obs.png"): 
-    # ---------------------------------------------------------
-    # Load input data
-    # ---------------------------------------------------------
-    stations = pd.read_csv(stations_data_filepath, parse_dates=["datetime"])
-    sim_model1 = pd.read_csv(daily_sim_model1_filepath)
-    sim_model2 = pd.read_csv(daily_sim_model2_filepath)
-    sim_model3 = pd.read_csv(monthly_sim_model_filepath)
-
-    # ---------------------------------------------------------
-    # Prepare station monthly mean GHI data
-    # ---------------------------------------------------------
-    stations["date"] = stations["datetime"].dt.date
-    stations["month"] = stations["datetime"].dt.month
-    stations["year"] = stations["datetime"].dt.year
-    stations["GHI_daily_mean"] = stations.groupby(["station", "date"])["value"].transform("mean")
-    stations["GHI_daily_kWh"] = stations["GHI_daily_mean"] * 24 / 1000    
-    station_monthly_means = stations.groupby(["station","year","month"])["GHI_daily_kWh"].mean().reset_index()
-    flesland_monthly_means = station_monthly_means.loc[station_monthly_means["station"] == "Flesland", "GHI_daily_kWh"]
-    florida_monthly_means = station_monthly_means.loc[station_monthly_means["station"] == "Florida", "GHI_daily_kWh"]
-
-    # ---------------------------------------------------------
-    # Prepare spatially uniform model monthly data
-    # ---------------------------------------------------------
-    sim_model2["GHI_daily_kWh"] = sim_model2["GHI_daily_Wh"] / 1000
-    sim_model1["GHI_daily_kWh"] = sim_model1["GHI_daily_Wh"] / 1000   
-    sim_model1_monthly_means = sim_model1.groupby(["year", "month"])["GHI_daily_kWh"].mean().reset_index()
-    sim_model2_monthly_means = sim_model2.groupby(["year", "month"])["GHI_daily_kWh"].mean().reset_index()
- 
-    # ---------------------------------------------------------
-    # Spatially resolved model: extract Florida + Flesland daily kWh
-    # ---------------------------------------------------------
-    sim_model3["Florida_kWh"] = sim_model3["Florida_GHI_daily_Wh_mean"] / 1000
-    sim_model3["Flesland_kWh"] = sim_model3["Flesland_GHI_daily_Wh_mean"] / 1000
-
-    # Only keep sky_type == "all-sky"
-    sim_model3_monthly_means = sim_model3[sim_model3["sky_type"] == "all-sky"]
-    sim_model3_flesland = sim_model3_monthly_means["Flesland_kWh"]
-    sim_model3_florida = sim_model3_monthly_means["Florida_kWh"]
-     
-    # Calculate cdfs
-    ecdf_flesland = sm.distributions.ECDF(flesland_monthly_means)
-    ecdf_florida = sm.distributions.ECDF(florida_monthly_means)
-    ecdf_model1 = sm.distributions.ECDF(sim_model1_monthly_means["GHI_daily_kWh"])
-    ecdf_model2 = sm.distributions.ECDF(sim_model2_monthly_means["GHI_daily_kWh"])
-    ecdf_model3_flesland = sm.distributions.ECDF(sim_model3_flesland)
-    ecdf_model3_florida = sm.distributions.ECDF(sim_model3_florida)
-    
-    # Plot 
-    x = np.linspace(0, 9, 400)
-
-    plt.plot(x, ecdf_flesland(x), label="Flesland", color="tab:red")
-    plt.plot(x, ecdf_florida(x), label="Florida", color="tab:orange")
-    plt.plot(x, ecdf_model1(x), label="Model 1", color="tab:blue")
-    plt.plot(x, ecdf_model2(x), label="Model 2", color="tab:green")
-    plt.plot(x, ecdf_model3_flesland(x), label="Model 3: Flesland", color="tab:purple")
-    plt.plot(x, ecdf_model3_florida(x), label="Model 3: Florida", color="tab:brown")
-
-    plt.xlabel("Daily Mean Solar Irradiation [kWh/m²]")
-    plt.ylabel("Cumulative Probability")
-    plt.legend()
-    plt.grid(True)
-    plt.title("CDF Comparison - Monthly Means")
-    plt.tight_layout()
-    
-    # Save and print save message
-    plt.savefig(outpath, dpi=150)
-    print(f"Saved ecdf plot to {outpath}.")
-    plt.close()
-  
 
 
 def print_emd_daily_mean(
@@ -786,7 +475,7 @@ def print_emd_daily_mean(
     Prints Earth Mover's Distance (Wasserstein) for daily mean GHI:
       1) Overall daily means
       2) Monthly daily means
-      3) Plot of monthly EMD values for:
+    Plots monthly EMD values for:
          - M1 vs Flesland
          - M1 vs Florida
          - M2 vs Flesland
@@ -936,193 +625,10 @@ def print_emd_daily_mean(
     print(f"Saved figure to {outpath}.")
 
 
-def print_emd_monthly_mean(
-    stations_data_filepath, 
-    daily_sim_model1_filepath, 
-    daily_sim_model2_filepath,
-    monthly_sim_model_filepath,
-    outpath="output/emd_monthly_mean_vs_month.png"
-):
-    """
-    Extends the monthly mean EMD analysis to:
-      - Print overall monthly mean EMD (existing)
-      - Print per-month EMD values (new)
-      - Plot EMD vs. month for Model1, Model2, Model3 vs. each station (new)
-    """
-
-    print("\n=========================")
-    print(" EMD for MONTHLY MEANS")
-    print("=========================\n")
-
-    # ---------------------------------------------------------
-    # Load data
-    # ---------------------------------------------------------
-    stations = pd.read_csv(stations_data_filepath, parse_dates=["datetime"])
-    sim_model1 = pd.read_csv(daily_sim_model1_filepath)
-    sim_model2 = pd.read_csv(daily_sim_model2_filepath)
-    sim_model3 = pd.read_csv(monthly_sim_model_filepath)
-
-    # ---------------------------------------------------------
-    # Prepare station monthly means
-    # ---------------------------------------------------------
-    stations["date"] = stations["datetime"].dt.date
-    stations["month"] = stations["datetime"].dt.month
-    stations["year"] = stations["datetime"].dt.year
-
-    stations["GHI_daily_mean"] = stations.groupby(["station","date"])["value"].transform("mean")
-    stations["GHI_daily_kWh"] = stations["GHI_daily_mean"] * 24 / 1000
-
-    station_monthly = stations.groupby(
-        ["station","year","month"]
-    )["GHI_daily_kWh"].mean().reset_index()
-
-    flesland_monthly = station_monthly.loc[
-        station_monthly["station"]=="Flesland", "GHI_daily_kWh"
-    ].values
-
-    florida_monthly = station_monthly.loc[
-        station_monthly["station"]=="Florida", "GHI_daily_kWh"
-    ].values
-
-    # ---------------------------------------------------------
-    # Prepare model monthly means
-    # ---------------------------------------------------------
-    sim_model1["GHI_daily_kWh"] = sim_model1["GHI_daily_Wh"] / 1000
-    sim_model2["GHI_daily_kWh"] = sim_model2["GHI_daily_Wh"] / 1000
-
-    model1_monthly = sim_model1.groupby(["year","month"])["GHI_daily_kWh"].mean().values
-    model2_monthly = sim_model2.groupby(["year","month"])["GHI_daily_kWh"].mean().values
-
-    # Model 3 (already monthly)
-    sim_model3["Flesland_kWh"] = sim_model3["Flesland_GHI_daily_Wh_mean"] / 1000
-    sim_model3["Florida_kWh"]  = sim_model3["Florida_GHI_daily_Wh_mean"] / 1000
-    sim_model3 = sim_model3[sim_model3["sky_type"] == "all-sky"]
-
-    model3_flesland = sim_model3["Flesland_kWh"].values
-    model3_florida  = sim_model3["Florida_kWh"].values
-
-    # ---------------------------------------------------------
-    # Compute Overall EMDs
-    # ---------------------------------------------------------
-    print("---- Overall EMD (Monthly Means) ----")
-
-    for station_name, s_vals in [("Flesland", flesland_monthly),
-                                 ("Florida", florida_monthly)]:
-
-        emd_m1 = wasserstein_distance(s_vals, model1_monthly)
-        emd_m2 = wasserstein_distance(s_vals, model2_monthly)
-        emd_m3 = wasserstein_distance(
-            s_vals,
-            model3_flesland if station_name=="Flesland" else model3_florida
-        )
-
-        print(f"{station_name}:")
-        print(f"   Model 1 vs Station: {emd_m1:.4f} kWh/m²")
-        print(f"   Model 2 vs Station: {emd_m2:.4f} kWh/m²")
-        print(f"   Model 3 vs Station: {emd_m3:.4f} kWh/m²")
-
-    # ---------------------------------------------------------
-    # Monthly EMD Values
-    # ---------------------------------------------------------
-    print("\n---- Monthly EMD (Monthly Means) ----")
-
-    months = range(1, 13)
-
-    # Arrays for plotting
-    m1_fles = [];  m1_flor = []
-    m2_fles = [];  m2_flor = []
-    m3_fles = [];  m3_flor = []
-
-    for month in months:
-        print(f"\nMonth {month:02d}:")
-
-        # observed station values for this month
-        s_fles = station_monthly.loc[
-            (station_monthly["station"]=="Flesland") &
-            (station_monthly["month"]==month),
-            "GHI_daily_kWh"
-        ].values
-
-        s_flor = station_monthly.loc[
-            (station_monthly["station"]=="Florida") &
-            (station_monthly["month"]==month),
-            "GHI_daily_kWh"
-        ].values
-
-        # model values for this month
-        m1_m = sim_model1.loc[sim_model1["month"]==month, "GHI_daily_kWh"].values
-        m2_m = sim_model2.loc[sim_model2["month"]==month, "GHI_daily_kWh"].values
-
-        m3_fles_m = sim_model3.loc[sim_model3["month"]==month, "Flesland_kWh"].values
-        m3_flor_m = sim_model3.loc[sim_model3["month"]==month, "Florida_kWh"].values
-
-        # --- Flesland ---
-        if len(s_fles) > 0:
-            e1 = wasserstein_distance(s_fles, m1_m)
-            e2 = wasserstein_distance(s_fles, m2_m)
-            e3 = wasserstein_distance(s_fles, m3_fles_m)
-            print(f"  Flesland: M1={e1:.4f}, M2={e2:.4f}, M3={e3:.4f}")
-        else:
-            e1 = e2 = e3 = None
-            print("  Flesland: No data")
-
-        m1_fles.append(e1)
-        m2_fles.append(e2)
-        m3_fles.append(e3)
-
-        # --- Florida ---
-        if len(s_flor) > 0:
-            e1 = wasserstein_distance(s_flor, m1_m)
-            e2 = wasserstein_distance(s_flor, m2_m)
-            e3 = wasserstein_distance(s_flor, m3_flor_m)
-            print(f"  Florida: M1={e1:.4f}, M2={e2:.4f}, M3={e3:.4f}")
-        else:
-            e1 = e2 = e3 = None
-            print("  Florida: No data")
-
-        m1_flor.append(e1)
-        m2_flor.append(e2)
-        m3_flor.append(e3)
-
-    # ---------------------------------------------------------
-    # Plot EMD vs Month
-    # ---------------------------------------------------------
-    plt.figure(figsize=(10, 5))
-
-    # convert None → NaN
-    m1_fles = np.array([np.nan if v is None else v for v in m1_fles])
-    m1_flor = np.array([np.nan if v is None else v for v in m1_flor])
-    m2_fles = np.array([np.nan if v is None else v for v in m2_fles])
-    m2_flor = np.array([np.nan if v is None else v for v in m2_flor])
-    m3_fles = np.array([np.nan if v is None else v for v in m3_fles])
-    m3_flor = np.array([np.nan if v is None else v for v in m3_flor])
-
-    # Model 1 (blue)
-    plt.plot(months, m1_fles, color="blue",  marker="o", markersize=10, linestyle="-", label="Model 1 vs Flesland")
-    plt.plot(months, m1_flor, color="blue",  marker="d", markersize=12, linestyle=":", label="Model 1 vs Florida")
-
-    # Model 2 (green)
-    plt.plot(months, m2_fles, color="green", marker="o", markersize=10, linestyle="-", label="Model 2 vs Flesland")
-    plt.plot(months, m2_flor, color="green", marker="d", markersize=12, linestyle=":", label="Model 2 vs Florida")
-
-    # Model 3 (purple for Flesland, brown for Florida)
-    plt.plot(months, m3_fles, color="purple", marker="o", markersize=10, linestyle="-", label="Model 3 vs Flesland")
-    plt.plot(months, m3_flor, color="brown",  marker="d", markersize=12, linestyle=":", label="Model 3 vs Florida")
-
-    plt.xlabel("Month")
-    plt.ylabel("EMD (kWh/m²)")
-    plt.title("EMD for Monthly Distribution of Monthly Mean of Daily Mean Irradiation")
-    plt.xticks(list(months))
-    plt.grid(alpha=0.4)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(outpath)
-
-    print(f"\nSaved monthly EMD plot to: {outpath}")
-    
-
 def sky_type_contribution_to_monthly_irradiation(results_model2_filepath, 
                                                  outpath="output/sky_type_contribution_monthly_irradiation_model2.png"):
+    """Plot the contribution of each sky type (in percentage) 
+    to overall monthly irradiation based on model 2. Plot barplot and save to outpath."""
     # ----------------------------------------------------
     # Load data
     # ----------------------------------------------------
@@ -1226,7 +732,8 @@ def sky_type_contribution_to_monthly_irradiation(results_model2_filepath,
 
 
 def calculate_energy_for_locations(monthly_irradiation_spatial_filepath, A=25, eta=0.25, pr=0.8):
-    
+    """Calculate Energy production for six sample locations in the study area for monthly and 
+    annual outputs. """
     # -------------------------
     # Define locations
     # -------------------------
@@ -1379,16 +886,15 @@ if __name__ == "__main__":
     monthly_simulation_nc_path = "data/processed/longterm_ghi_spatially_resolved_monthly.nc"
     
     # Clean dataset
-    #stations_data_df = flag_stations_data(stations_data_raw_path)
-    #stations_data_df = stations_data_df.loc[stations_data_df["value_flag"] == "OK"]
-    #stations_data_df = stations_data_df.drop(columns=["value_flag"])
-    #print(stations_data_df.head())
+    stations_data_df = flag_stations_data(stations_data_raw_path)
+    stations_data_df = stations_data_df.loc[stations_data_df["value_flag"] == "OK"]
+    stations_data_df = stations_data_df.drop(columns=["value_flag"])
+    print(stations_data_df.head())
     # Save 
-    #stations_data_df.to_csv(stations_data_cleaned_path, index=False)
+    stations_data_df.to_csv(stations_data_cleaned_path, index=False)
     
     # Plot daily ghi 
-    #plot_doy_vs_daily_mean_ghi(stations_data_cleaned_path, daily_simulation_monthly_path, daily_simulation_annual_path)
-    """plot_doy_vs_daily_mean_ghi_10day(stations_data_cleaned_path,
+    plot_doy_vs_daily_mean_ghi_10day(stations_data_cleaned_path,
                                      daily_sim_model1_path=daily_simulation_model1_path, 
                                      daily_sim_model2_path=daily_simulation_model2_path, 
                                      daily_sim_model3_path=daily_sim_model_3_path)
@@ -1397,26 +903,13 @@ if __name__ == "__main__":
                                    sim_model2_path=daily_simulation_model2_path,
                                    sim_model3_path=daily_sim_model_3_path,
                                    outpath="output/stations_vs_longterm_sim_monthly_boxplots_daily_variability.png")
-    plot_monthly_boxplots_seasonal_monthly_variability(stations_data_path=stations_data_cleaned_path,
-                                   sim_monthly_path=daily_simulation_monthly_path,
-                                   sim_annual_path=daily_simulation_annual_path,
-                                   sim_spatial_path=monthly_simulation_spatial_path,
-                                   outpath="output/stations_vs_longterm_sim_monthly_boxplots_monthly_variability.png")
     plot_ecdfs_daily_mean(stations_data_filepath=stations_data_cleaned_path,
                           daily_sim_model1_filepath=daily_simulation_model1_path,
                           daily_sim_model2_filepath=daily_simulation_model2_path,
                           daily_sim_model3_filepath=daily_sim_model_3_path)
-    plot_ecdfs_monthly_mean(stations_data_filepath=stations_data_cleaned_path, 
-                            daily_sim_model1_filepath=daily_simulation_annual_path, 
-                            daily_sim_model2_filepath=daily_simulation_monthly_path, 
-                            monthly_sim_model_filepath=monthly_simulation_spatial_path)
     print_emd_daily_mean(stations_data_filepath=stations_data_cleaned_path,
                          daily_sim_model1_filepath=daily_simulation_model1_path,
                          daily_sim_model2_filepath=daily_simulation_model2_path,
                          daily_sim_model3_filepath = daily_sim_model_3_path)
-    print_emd_monthly_mean(stations_data_filepath=stations_data_cleaned_path, 
-                           daily_sim_model1_filepath=daily_simulation_annual_path,
-                           daily_sim_model2_filepath=daily_simulation_monthly_path,
-                           monthly_sim_model_filepath=monthly_simulation_spatial_path)"""
-    #sky_type_contribution_to_monthly_irradiation(results_model2_filepath=daily_simulation_monthly_path)
+    sky_type_contribution_to_monthly_irradiation(results_model2_filepath=daily_simulation_model2_path)
     calculate_energy_for_locations(monthly_irradiation_spatial_filepath=monthly_simulation_nc_path)

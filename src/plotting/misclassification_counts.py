@@ -1,3 +1,8 @@
+# ===============================================================================
+# Plot number/percentage of misclassifications for different coarse resolutions
+# and cloud cover percentages. 
+# ===============================================================================
+
 import matplotlib.pyplot as plt 
 import pandas as pd
 import numpy as np
@@ -7,6 +12,27 @@ from src.plotting import set_paper_style
 set_paper_style()
 
 def plot_misclassification_vs_scale(misclassification_counts_csv_filepath, outpath):
+    """
+    Plot misclassification percentage of cloud classification as a function of 
+    deviation from 50% cloud cover, for multiple spatial resolutions.
+
+    Parameters
+    ----------
+    misclassification_counts_csv_filepath : str
+        Path to a CSV file containing columns:
+        - 'date': observation date
+        - 'cloud_cover_10m': cloud cover percentage at 10m scale
+        - 'misclassified_percentage': percentage of misclassified pixels
+        - 'resolution': spatial resolution in meters
+    outpath : str
+        File path to save the generated plot.
+
+    Outputs
+    -------
+    Saves a line plot with shaded 95% confidence intervals showing median 
+    misclassification versus |cloud_cover - 50| for each resolution.
+    Includes a theoretical maximum misclassification reference line.
+    """
 
     # Load data
     df = pd.read_csv(misclassification_counts_csv_filepath)

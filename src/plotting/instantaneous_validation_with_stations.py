@@ -1,20 +1,26 @@
+# ======================================================================
+# Compute error metrics, plot simulations vs. observations, describe
+# simulated and observed data distributions. 
+# ======================================================================
+
 import matplotlib.pyplot as plt 
-import seaborn as sns
 import pandas as pd 
 import numpy as np
 import statsmodels.api as sm
 from statsmodels.stats.diagnostic import het_white
 from scipy.stats import linregress
-from sklearn.metrics import r2_score
 from sklearn.linear_model import TheilSenRegressor
 from src.model import MIXED_THRESHOLD, OVERCAST_THRESHOLD, COARSE_RESOLUTIONS
 from src.plotting import SIMULATION_COLOR, SIMULATION_LS, SIMULATION_M, OBSERVATION_COLOR, OBSERVATION_LS, OBSERVATION_M
 from src.plotting import SKY_TYPE_COLORS, STATION_COLORS, set_paper_style
-from preprocessing.quality_control_flag_stations_data import flag_observations
+from src.preprocessing.quality_control_flag_stations_data import flag_observations
 
 set_paper_style()
 
 def print_basic_info(sim_vs_obs):
+    """Print descriptive information of table with florida and flesland 
+    ghi measurements and simulated data."""
+    
     # Correlations 
     sub_merged = sim_vs_obs[[
         "date",
@@ -51,7 +57,7 @@ def print_basic_info(sim_vs_obs):
 def scatter_with_fit(sim, obs, xlabel="", ylabel="", title="", outpath="output/scatterplot.png", 
     ax=None, show_stats=True, sky_type=None):
     """
-    Scatter plot with 1:1 dashed line, optional R² and correlation display.
+    Scatter plot between simulations and observations with 1:1 dashed line, optional R² and correlation display.
     Optionally color points by sky type (categorical variable).
     """
     if ax is None:
@@ -100,7 +106,8 @@ def scatter_with_fit(sim, obs, xlabel="", ylabel="", title="", outpath="output/s
 
 def lineplot_doy(x, y1, y2=None, xlabel="DOY", ylabel="", title="", 
                  outpath="output/lineplot.png", labels=("sim", "obs"), ax=None):
-    """Plot DOY vs variable. Optionally plot two lines (sim and obs). Only plot points where both are not NaN."""
+    """Plot DOY (x-axis) vs variable (y-axis). Optionally plot two lines (e.g. sim and obs). 
+    Only plot points where both are not NaN."""
     
     x = np.array(x)
     y1 = np.array(y1)
@@ -136,6 +143,8 @@ def lineplot_doy(x, y1, y2=None, xlabel="DOY", ylabel="", title="",
     
 
 def compute_error_model_tian2016(x, y):
+    """Compute error metrics based on error model in Tian et al (2016). DOI:
+    https://doi.org/10.1175/MWR-D-15-0087.1 """
     # Align data
     df = np.column_stack([x, y])
     df = df[~np.isnan(df).any(axis=1)]
@@ -237,7 +246,8 @@ def compute_error_metrics(df, sim_col="flesland_ghi_sim_horizontal_log",
 
 def compute_ksi(sim, obs, nbins=50):
     """
-    Compute Kolmogorov–Smirnov test integral (KSI) following Espinar et al. (2010).
+    Compute Kolmogorov–Smirnov test integral (KSI) following Espinar et al. (2010). 
+    DOI: https://doi.org/10.1016/j.solener.2008.07.009
 
     Returns KSI [%].
     """
@@ -280,21 +290,36 @@ def plot_error_vs_cloud_cover(df, x_col="cloud_cover_large",
                               plot_regression=True,
                               outpath="output/florida_shadow_cloud_cover_vs_error.png"):
     """
-    Plot model error as a function of cloud cover, distinguishing cloud shadow pixels.
+    Plot simulation error versus some continuous control variable (x_col) and cloud shadow (cat_col).
+
+    Optionally fits Theil–Sen regressions for both clear and shadow pixels and annotates slopes and intercepts.
 
     Parameters
     ----------
     df : pandas.DataFrame
-        Data containing simulation, observation, cloud cover, and cloud shadow.
-    cloud_cover_col : str
-        Column name for fractional cloud cover (0-100 or 0-1).
-    shadow_col : str
-        Column name for binary cloud shadow (0=clear, 1=shadow).
-    sim_col : str
-        Column name for modeled GHI.
-    obs_col : str
-        Column name for observed GHI.
+        Data containing columns for control variable, simulation error, and categorical variable.
+    x_col : str, optional
+        Column name for control variable (default: "cloud_cover_large").
+    cat_col : str, optional
+        Column name for binary cloud shadow variable (default: "florida_cloud_shadow").
+    error_col : str, optional
+        Column name for model error (Simulated - Observed) (default: "error").
+    title : str, optional
+        Plot title (default: "Florida Absolute Simulation Error vs. Cloud Cover").
+    xlabel : str, optional
+        Label for x-axis (default: "Cloud Cover (%)").
+    ylabel : str, optional
+        Label for y-axis (default: "Sim - Obs").
+    plot_regression : bool, optional
+        Whether to compute and plot Theil–Sen regression lines (default: True).
+    outpath : str, optional
+        File path to save the figure (default: "output/florida_shadow_cloud_cover_vs_error.png").
+
+    Outputs
+    -------
+    Saves a scatter plot with regression lines (if enabled) to the specified `outpath`.
     """
+
 
     # Compute error
     df = df.copy()
@@ -368,93 +393,8 @@ def plot_error_vs_cloud_cover(df, x_col="cloud_cover_large",
     print(f"Scatter plot saved to {outpath}.")
     
 
-def plot_sim_vs_obs_shadow(
-    sim_vs_obs, 
-    outpath="output/scatter_mixed_shadow.png", 
-    show_stats=True
-):
-    """
-    Create scatterplots of simulated vs observed GHI for Florida and Flesland
-    (mixed sky only), colored by cloud shadow (0=clear, 1=shadow).
-    Includes 1:1 line and optional R²/correlation stats.
-    """
-
-    # --- Filter for mixed sky type ---
-    df = sim_vs_obs[sim_vs_obs["sky_type"] == "mixed"].copy()
-
-    # --- Required columns check ---
-    required_cols = [
-        "florida_ghi_sim_horizontal", "Florida_ghi_1M", "florida_cloud_shadow",
-        "flesland_ghi_sim_horizontal", "Flesland_ghi_1M", "flesland_cloud_shadow"
-    ]
-    for c in required_cols:
-        if c not in df.columns:
-            raise ValueError(f"Missing column: {c}")
-
-    # --- Setup figure ---
-    fig, axes = plt.subplots(1, 2, figsize=(12, 6), sharex=True, sharey=True)
-    fig.suptitle("Simulated vs Observed GHI (Mixed Sky)", fontsize=14, y=0.95)
-
-    # --- Helper for one subplot ---
-    def _scatter(ax, x, y, shadow, title):
-        colors = {0: "tab:blue", 1: "tab:red"}
-        labels = {0: "Clear (0)", 1: "Cloud shadow (1)"}
-
-        for val in [0, 1]:
-            mask = (shadow == val) & ~np.isnan(x) & ~np.isnan(y)
-            ax.scatter(
-                x[mask], y[mask],
-                color=colors[val], label=labels[val],
-                alpha=0.7, s=30, edgecolor="none"
-            )
-
-        # 1:1 line
-        min_val = np.nanmin([x, y])
-        max_val = np.nanmax([x, y])
-        ax.plot([min_val, max_val], [min_val, max_val], "k--", lw=1, label="1:1 line")
-
-        # Compute and show stats
-        if show_stats:
-            mask_all = ~np.isnan(x) & ~np.isnan(y)
-            if np.sum(mask_all) > 1:
-                r2_all = r2_score(y[mask_all], x[mask_all])
-                corr_all = np.corrcoef(x[mask_all], y[mask_all])[0, 1]
-                stats_text = f"R²={r2_all:.2f}\nCorr={corr_all:.2f}"
-                ax.text(
-                    0.05, 0.95, stats_text, transform=ax.transAxes,
-                    va="top", bbox=dict(boxstyle="round", facecolor="white", alpha=0.6),
-                    fontsize=9
-                )
-
-        ax.set_title(title)
-        ax.set_xlabel("Simulated GHI [W/m²]")
-        ax.set_ylabel("Observed GHI [W/m²]")
-        ax.legend(loc="lower right")
-
-    # --- Florida subplot ---
-    _scatter(
-        axes[0],
-        df["florida_ghi_sim_horizontal"].values,
-        df["Florida_ghi_1M"].values,
-        df["florida_cloud_shadow"].values,
-        "Florida (Mixed Sky)"
-    )
-
-    # --- Flesland subplot ---
-    _scatter(
-        axes[1],
-        df["flesland_ghi_sim_horizontal"].values,
-        df["Flesland_ghi_1M"].values,
-        df["flesland_cloud_shadow"].values,
-        "Flesland (Mixed Sky)"
-    )
-
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-    plt.savefig(outpath, dpi=300)
-    print(f"Saved scatterplots to {outpath}")
-    plt.show()
-
 def print_sky_type_percentages(sim_vs_obs): 
+    """Print counts and percentages of each sky type in Sentinel-2 observations."""
     # Total observations
     total_obs = len(sim_vs_obs)
     
@@ -487,9 +427,9 @@ def plot_obs_vs_sim_distributions(
 
     Parameters
     ----------
-    ghi_florida : array-like
+    florida_obs : array-like
         Observed GHI values for Florida.
-    ghi_flesland : array-like
+    flesland_obs : array-like
         Observed GHI values for Flesland.
     florida_sim : array-like
         Simulated GHI values for Florida.
@@ -567,6 +507,8 @@ def plot_obs_vs_sim_distributions(
 def plot_obs_distributions(ghi_florida, ghi_flesland, outpath,
                            xlabel="Measured GHI [W/m²]",
                            title="Distribution of Measured GHI"):
+    """Plot histogram of distribution of observations at Flesland and 
+    Florida stations. Save figure to outpath."""
     
     florida_min, florida_max = np.nanmin(ghi_florida), np.nanmax(ghi_florida)
     flesland_min, flesland_max = np.nanmin(ghi_flesland), np.nanmax(ghi_flesland)
@@ -588,9 +530,6 @@ def plot_obs_distributions(ghi_florida, ghi_flesland, outpath,
     plt.figure(figsize=(7, 5))
     plt.plot(bin_centers, counts_florida, color=STATION_COLORS["Florida"], marker="^", label="Florida")
     plt.plot(bin_centers, counts_flesland, color=STATION_COLORS["Flesland"], marker="o", label="Flesland")
-    # Optional histogram overlay (uncomment if you want bars instead of smooth KDE)
-    # plt.hist(ghi_florida, bins=40, color=STATION_COLORS["Florida"], alpha=0.3, label="Florida")
-    # plt.hist(ghi_flesland, bins=40, color=STATION_COLORS["Flesland"], alpha=0.3, label="Flesland")
 
     plt.xlabel(xlabel)
     plt.ylabel("Frequency (%)")
@@ -603,11 +542,9 @@ def plot_obs_distributions(ghi_florida, ghi_flesland, outpath,
     
 def test_heteroscedasticity_white(flesland_sim, flesland_obs, 
                                   florida_sim, florida_obs): 
-    # ---------------------------------------------------------------------
-    # Prepare regression design (simulate the model-predicted relationship)
-    # For heteroscedasticity tests, we need residuals and model predictors
-    # ---------------------------------------------------------------------
-
+    """Perform White's test of heteroscedasticity of flesland and florida
+    simulations vs. observations."""
+    
     # Flesland: observed vs simulated (log-transformed)
     y_flesland = flesland_obs
     X_flesland = sm.add_constant(flesland_sim)
@@ -644,13 +581,8 @@ def test_heteroscedasticity_white(flesland_sim, flesland_obs,
 def main(): 
     sim_ECAD_path = "data/processed/s2_cloud_cover_table_small_and_large_with_simulated_florida_flesland_ghi.csv"
     sim_vs_obs_path = "data/processed/s2_cloud_cover_with_stations_with_pixel_sim.csv"
-    lut_path = "data/processed/LUT/claas3/LUT.csv"
 
     # Correlations 
-    # frost coordinates: 0.723 Florida, 0.723 Flesland
-    # plotting coordinates: 0.723 Florida, 0.886 Flesland
-    # shifted coordinates: 0.626 Florida, 0.886 Flesland
-    # ECAD coordinates: 0.718 Florida, 0.8709 Flesland
     # Read
     sim_ECAD = pd.read_csv(sim_ECAD_path)
     sim_vs_obs = pd.read_csv(sim_vs_obs_path)
@@ -674,11 +606,6 @@ def main():
 
     assert all(col in sim_vs_obs.columns for col in required_cols), \
         f"Missing columns: {set(required_cols) - set(sim_vs_obs.columns)}"
-
-    # -------------------------- Plot missing values ---------------------
-    
-
-
 
 
     # ------------------------------ Add sky type ---------------------------
@@ -709,7 +636,7 @@ def main():
     sim_vs_obs_sub = sim_vs_obs[subset_cols].copy()
     
     # Print basic info and statistics
-    #print_basic_info(sim_vs_obs_sub)
+    print_basic_info(sim_vs_obs_sub)
 
     # Overwrite GHI values with NaN where flag is not OK
     sim_vs_obs_sub["Flesland_ghi_1M"] = np.where(
@@ -724,7 +651,7 @@ def main():
         sim_vs_obs_sub["Florida_ghi_1M"]
     )
     
-    """
+    
     # ---------------------- Log Transformation ---------------------------
     # Transform everything to log because of non-Gaussian distribution 
     cols_to_check = [
@@ -944,8 +871,6 @@ def main():
             print(f"\n📊 {station_name} — {sim_scenario}:")
             print(pd.DataFrame(filtered_metrics).T)
     
-    # Diagnostics: Plot for mixed sky type shadowed pixels and clear pixels against observations
-    #plot_sim_vs_obs_shadow(sim_vs_obs_sub)
 
     
     # Plot scatter Flesland sim - Flesland obs
@@ -1014,7 +939,7 @@ def main():
             ylabel="GHI (W/m²)",
             title=f"DOY vs Florida GHI ({year})",
             outpath=f"output/lineplot_florida_sim_obs_doy_{year}.png"
-        )   """
+        )   
     
     
 if __name__ == "__main__": 

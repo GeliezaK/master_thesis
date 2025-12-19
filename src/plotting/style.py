@@ -1,6 +1,5 @@
 # src/plotting/colors.py
 import matplotlib as mpl
-import matplotlib.pyplot as plt
 
 def set_paper_style():
     """Set a uniform style for publication-quality plots."""

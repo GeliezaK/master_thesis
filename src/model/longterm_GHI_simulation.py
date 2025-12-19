@@ -1,7 +1,11 @@
+# ==================================================================================
+# Simulate long-term global horizontal irradiance based on clear-sky index and 
+# sky type sampling 
+# ==================================================================================
+
 import pandas as pd 
 import numpy as np 
 import os
-import matplotlib.pyplot as plt
 import xarray as xr
 from tqdm import tqdm 
 from scipy.stats import dirichlet
@@ -9,15 +13,14 @@ from src.model import FLORIDA_LAT, FLORIDA_LON, FLESLAND_LAT, FLESLAND_LON
 from src.model.instantaneous_GHI_model import build_ghi_clear_lut
 from src.model.generate_LUT import HOD_DICT
 
-
 # ---------------------------------------------------------
 # Clear-sky-index bootstrap samplers
 # ---------------------------------------------------------
 def prepare_csi_bootstrap(clear_sky_index_monthly_mixed_sky_filepath):
     """
     Loads Clear-sky index observations and returns:
-        per_month[(sky_type, month)] -> array
-        pooled[sky_type] -> array
+        per_month[(sky_type, month)] -> array (for Model 2)
+        pooled[sky_type] -> array (for Model 1)
     """
     df = pd.read_csv(clear_sky_index_monthly_mixed_sky_filepath)
     df["sky_type"] = df["sky_type"].astype(str)
@@ -46,7 +49,7 @@ def prepare_csi_bootstrap(clear_sky_index_monthly_mixed_sky_filepath):
 
 
 def bootstrap_csi_annual(pooled_dict, sky_type):
-    """Draw CSI from pooled (all-month) distribution."""
+    """Draw CSI from pooled (all-month, Model 1) distribution."""
     if sky_type == "clear":
         return 1.0
     arr = pooled_dict[sky_type]
@@ -54,7 +57,7 @@ def bootstrap_csi_annual(pooled_dict, sky_type):
 
 
 def bootstrap_csi_monthly(per_month_dict, sky_type, month):
-    """Draw CSI from per-month distribution."""
+    """Draw CSI from per-month (Model 2) distribution."""
     if sky_type == "clear":
         return 1.0
     arr = per_month_dict.get((sky_type, month), None)
@@ -66,16 +69,36 @@ def bootstrap_csi_monthly(per_month_dict, sky_type, month):
 # Sky type dirichlet sampling
 # ---------------------------------------------------------
 def sample_dirichlet(sky_type_counts_path, n_samples):
-    # Example counts per month (replace with your actual counts)
+    """
+    Sample monthly sky-type probability vectors from a Dirichlet posterior.
+
+    For each month, observed counts of clear, mixed, and overcast conditions are
+    combined with a uniform Dirichlet prior to generate random, repeated samples of
+    sky-type occurrence probabilities.
+
+    Parameters
+    ----------
+    sky_type_counts_path : str
+        Path to a CSV file containing monthly sky-type counts with columns
+        ``month``, ``clear``, ``mixed``, and ``overcast``.
+
+    n_samples : int
+        Number of Dirichlet samples to draw per month.
+
+    Returns
+    -------
+    samples_by_month : dict[int, numpy.ndarray]
+        Dictionary mapping month (1–12) to an array of shape
+        ``(n_samples, 3)``, containing sampled probabilities for
+        ``[clear, mixed, overcast]`` sky types.
+    """
+
     # Each row: month, count_clear, count_mixed, count_overcast
     counts = pd.read_csv(sky_type_counts_path)
 
-    # Choose a Dirichlet prior alpha (pseudo-counts).
-    # Use alpha=1 (uniform prior) or put a small extra mass on 'clear' to avoid zeros
+    # Choose uniform Dirichlet prior alpha (pseudo-counts).
     alpha_prior = np.array([1.0, 1.0, 1.0])
-    # If you want to nudge winter clear up a bit:
-    # alpha_prior = np.array([2.0, 1.0, 1.0])
-
+    
     # For each month sample probability vectors
     samples_by_month = {}
     for _, row in counts.iterrows():
@@ -85,24 +108,62 @@ def sample_dirichlet(sky_type_counts_path, n_samples):
         draws = dirichlet.rvs(posterior_alpha, size=n_samples)  # shape (n_samples, 3)
         samples_by_month[month] = draws
 
-    # Usage in simulation:
-    # For each simulation year and month, draw one p-vector:
-    # p_vec = samples_by_month[month][np.random.randint(0, n_samples)]
-    # then draw sky type ~ Categorical(p_vec)
-    return samples_by_month
+        return samples_by_month
 
 
 # ---------------------------------------------------------
 # Simulation loop
 # ---------------------------------------------------------
-def simulate_annual_ghi(monthly_sky_type_count_filepath, area_mean_clear_sky_index_filepath, 
+def simulate_ghi_timeseries(monthly_sky_type_count_filepath, area_mean_clear_sky_index_filepath, 
                         model="annual",
                         n_years=100, verbose = False):
-    """Given monthly sky type probabilities and clear sky index for each sky type, 
-    simulate n_years of the area-wide monthly and annual GHI. Returns a dataframe with one
-    row per observation, including columns GHI (integral), sky type (clear/mixed/overcast),
-    clear-sky index, month. """
-    # Build clear sky lut 
+    """
+    Simulate daily mean surface GHI using random, repeated sky-type
+    and clear-sky index sampling.
+
+    The function generates synthetic time series of daily Global Horizontal
+    Irradiance (GHI) by sampling monthly sky-type probabilities and drawing
+    clear-sky index values conditional on sky type. Total GHI is
+    calculated as clear sky irradiance multiplied with sampled clear-sky index.
+
+    Parameters
+    ----------
+    monthly_sky_type_count_filepath : str
+        Path to a CSV file containing monthly counts of sky types
+        (clear, mixed, overcast), used to infer sky-type probabilities.
+
+    area_mean_clear_sky_index_filepath : str
+        Path to a dataset containing observed clear-sky index values
+        aggregated over the study area and stratified by sky type.
+
+    model : {"annual", "monthly"}, optional
+        Bootstrapping strategy for the clear-sky index:
+        - ``"annual"`` : sample from pooled annual distributions
+        - ``"monthly"`` : sample from month-specific distributions
+        Default is ``"annual"``.
+
+    n_years : int, optional
+        Number of synthetic years to simulate. Default is 100.
+
+    verbose : bool, optional
+        If True, print diagnostic information during the simulation.
+        Default is False.
+
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame with one row per simulated day, containing the
+        following columns:
+        - ``year`` : simulated year index
+        - ``month`` : calendar month (1–12)
+        - ``doy`` : day of year
+        - ``GHI_daily_Wh`` : daily integrated GHI (Wh m⁻²)
+        - ``GHI_daily_mean_Wh`` : daily mean GHI (Wh m⁻²)
+        - ``k`` : sampled clear-sky index
+        - ``sky_type`` : sky condition ("clear", "mixed", "overcast")
+    """
+
+    # Build clear sky lut from large lut as numpy array
     GHI_CLEAR_LUT = build_ghi_clear_lut()
     
     # Preload sky type sampling
@@ -130,7 +191,7 @@ def simulate_annual_ghi(monthly_sky_type_count_filepath, area_mean_clear_sky_ind
         year_index = (month_i // 12) + 1
         
         # Get number of days in this month
-        n_days = days_per_month[month-1] # Adjust using calendar
+        n_days = days_per_month[month-1] 
             
         # -------------------------------------------------------
         # Draw sky type 
@@ -227,11 +288,46 @@ def simulate_annual_ghi(monthly_sky_type_count_filepath, area_mean_clear_sky_ind
     
     
     
-def spatially_resolved_model(longterm_sim_results_spatially_uniform_filepath, clear_sky_index_monthly_mixed_sky_filepath, outpath_nc, 
+def spatial_ghi_maps_monthly(longterm_sim_results_spatially_uniform_filepath, clear_sky_index_monthly_mixed_sky_filepath, outpath_nc, 
                              verbose = False):
-    """Multiply monthly results times normalized monthly clear-sky index maps (for mixed sky conditions). Keep 
-    the results for overcast and clear sky conditions. Output: 12 maps (one for each month) with 
-    clear-sky index for mixed-sky and all-sky."""
+    """
+    Generate monthly spatial GHI maps by combining spatially uniform GHI simulations
+    with normalized clear-sky index patterns.
+
+    Monthly mean GHI values from long-term, spatially uniform simulations are
+    multiplied with monthly clear-sky index maps for mixed-sky
+    conditions. Clear- and overcast-sky contributions remain spatially uniform.
+    The result is a set of spatially resolved monthly GHI maps for mixed-sky and
+    all-sky conditions.
+
+    Parameters
+    ----------
+    longterm_sim_results_spatially_uniform_filepath : str
+        Path to a CSV file containing results from long-term mean daily GHI simulation 
+        (including sky-type, day and month information).
+
+    clear_sky_index_monthly_mixed_sky_filepath : str
+        Path to a NetCDF file containing monthly clear-sky index maps for mixed-sky
+        conditions with dimensions ``month``, ``lat``, and ``lon``.
+
+    outpath_nc : str
+        Path to the output NetCDF file where monthly spatial GHI maps are stored.
+
+    verbose : bool, optional
+        If True, print diagnostic information during processing.
+        Default is False.
+
+    Outputs
+    -------
+    NetCDF file
+        A NetCDF file written to ``outpath_nc`` containing:
+        - ``mixed_sky_ghi`` : spatially resolved monthly GHI for mixed-sky conditions
+        - ``all_sky_ghi`` : spatially resolved monthly GHI for all-sky conditions
+        - ``month_mixed_count`` : number of mixed-sky observations per month
+        - ``month_all_sky_count`` : total number of daily observations per month
+        along latitude and longitude coordinates.
+    """
+
     
     longterm_sim_df = pd.read_csv(longterm_sim_results_spatially_uniform_filepath)
     longterm_sim_df["GHI_daily_kWh"] = longterm_sim_df["GHI_daily_Wh"] / 1000
@@ -386,191 +482,6 @@ def spatially_resolved_model(longterm_sim_results_spatially_uniform_filepath, cl
     out_ds.to_netcdf(outpath_nc)
     print("Done.")
     
-    
-
-
-def spatially_resolved_simulation_timeseries(
-        simulation_results_csv,
-        clear_sky_index_monthly_filepath,
-        verbose=False
-    ):
-    """
-    Fast version:
-      - Preloads 12×2 pixel k-values (Florida, Flesland)
-      - No per-day append
-      - Sums and means per sky type
-    """
-
-    # ----------------------------------------------------------
-    # Load simulation dataframe
-    # ----------------------------------------------------------
-    df = pd.read_csv(simulation_results_csv)
-    df["GHI_daily_kWh"] = df["GHI_daily_Wh"] / 1000
-
-    # ----------------------------------------------------------
-    # Load k-maps dataset
-    # ----------------------------------------------------------
-    ds = xr.open_dataset(clear_sky_index_monthly_filepath)
-    lat = ds["lat"].values
-    lon = ds["lon"].values
-    k_monthly = ds["clear_sky_index"].values   # shape: (12, lat, lon)
-
-    # ----------------------------------------------------------
-    # Locate stations
-    # ----------------------------------------------------------
-    Florida_ilat = np.abs(lat - FLORIDA_LAT).argmin() 
-    Florida_ilon = np.abs(lon - FLORIDA_LON).argmin() 
-    Flesland_ilat = np.abs(lat - FLESLAND_LAT).argmin() 
-    Flesland_ilon = np.abs(lon - FLESLAND_LON).argmin()
-
-    if verbose:
-        print(f"Florida pixel:  ({Florida_ilat}, {Florida_ilon})")
-        print(f"Flesland pixel: ({Flesland_ilat}, {Flesland_ilon})")
-
-    # ----------------------------------------------------------
-    # Precompute k_norm values for each month (12 × 2)
-    # ----------------------------------------------------------
-    k_station = np.zeros((12, 2))  # month index 0..11, station 0=Florida,1=Flesland
-
-    for m in range(12):
-        k_map = k_monthly[m]
-        k_norm = k_map / k_map.mean()
-
-        k_station[m, 0] = float(k_norm[Florida_ilat, Florida_ilon])
-        k_station[m, 1] = float(k_norm[Flesland_ilat, Flesland_ilon])
-
-    # ----------------------------------------------------------
-    # Prepare looping
-    # ----------------------------------------------------------
-    years = sorted(df["year"].unique())
-    grouped_year = df.groupby("year")
-
-    results = []
-    pbar = tqdm(total=len(years) * 12, desc="Processing (fast version)")
-
-    # ----------------------------------------------------------
-    # Main loop
-    # ----------------------------------------------------------
-    for year in years:
-
-        df_year = grouped_year.get_group(year)
-        df_year_month = df_year.groupby("month")
-
-        for month in range(1, 13):
-
-            pbar.update(1)
-
-            if month not in df_year_month.groups:
-                continue
-
-            df_m = df_year_month.get_group(month)
-
-            # Masks
-            mask_m = df_m["sky_type"] == "mixed"
-            mask_c = df_m["sky_type"] == "clear"
-            mask_o = df_m["sky_type"] == "overcast"
-
-            # Observations per sky type
-            n_m = int(mask_m.sum())
-            n_c = int(mask_c.sum())
-            n_o = int(mask_o.sum())
-            n_all = n_m + n_c + n_o
-
-            # Extract arrays
-            ghi = df_m["GHI_daily_Wh"].values
-
-            ghi_m = ghi[mask_m]
-            ghi_c = ghi[mask_c]
-            ghi_o = ghi[mask_o]
-
-            # Station-specific k factors
-            kF = k_station[month-1, 0]  # Florida
-            kS = k_station[month-1, 1]  # Flesland
-
-            # ------------------------------------------------------
-            # Compute aggregated (SUM and MEAN)
-            # ------------------------------------------------------
-
-            # --- Mixed ---
-            fl_m_sum = (ghi_m * kF).sum()
-            fs_m_sum = (ghi_m * kS).sum()
-
-            # --- Clear ---
-            fl_c_sum = ghi_c.sum()
-            fs_c_sum = ghi_c.sum()
-
-            # --- Overcast ---
-            fl_o_sum = ghi_o.sum()
-            fs_o_sum = ghi_o.sum()
-
-            # --- All-sky ---
-            fl_all_sum = fl_m_sum + fl_c_sum + fl_o_sum
-            fs_all_sum = fs_m_sum + fs_c_sum + fs_o_sum
-
-            # Means
-            fl_m_mean = fl_m_sum / n_m if n_m else np.nan
-            fs_m_mean = fs_m_sum / n_m if n_m else np.nan
-
-            fl_c_mean = fl_c_sum / n_c if n_c else np.nan
-            fs_c_mean = fs_c_sum / n_c if n_c else np.nan
-
-            fl_o_mean = fl_o_sum / n_o if n_o else np.nan
-            fs_o_mean = fs_o_sum / n_o if n_o else np.nan
-
-            fl_all_mean = fl_all_sum / n_all if n_all else np.nan
-            fs_all_mean = fs_all_sum / n_all if n_all else np.nan
-
-            # ------------------------------------------------------
-            # Append a single row per sky type
-            # ------------------------------------------------------
-            results.append({
-                "year": year,
-                "month": month,
-                "sky_type": "mixed",
-                "n_clear": n_c, "n_mixed": n_m, "n_overcast": n_o,
-                "Florida_GHI_daily_Wh_sum": fl_m_sum,
-                "Florida_GHI_daily_Wh_mean": fl_m_mean,
-                "Flesland_GHI_daily_Wh_sum": fs_m_sum,
-                "Flesland_GHI_daily_Wh_mean": fs_m_mean
-            })
-
-            results.append({
-                "year": year,
-                "month": month,
-                "sky_type": "clear",
-                "n_clear": n_c, "n_mixed": n_m, "n_overcast": n_o,
-                "Florida_GHI_daily_Wh_sum": fl_c_sum,
-                "Florida_GHI_daily_Wh_mean": fl_c_mean,
-                "Flesland_GHI_daily_Wh_sum": fs_c_sum,
-                "Flesland_GHI_daily_Wh_mean": fs_c_mean
-            })
-
-            results.append({
-                "year": year,
-                "month": month,
-                "sky_type": "overcast",
-                "n_clear": n_c, "n_mixed": n_m, "n_overcast": n_o,
-                "Florida_GHI_daily_Wh_sum": fl_o_sum,
-                "Florida_GHI_daily_Wh_mean": fl_o_mean,
-                "Flesland_GHI_daily_Wh_sum": fs_o_sum,
-                "Flesland_GHI_daily_Wh_mean": fs_o_mean
-            })
-
-            results.append({
-                "year": year,
-                "month": month,
-                "sky_type": "all-sky",
-                "n_clear": n_c, "n_mixed": n_m, "n_overcast": n_o,
-                "Florida_GHI_daily_Wh_sum": fl_all_sum,
-                "Florida_GHI_daily_Wh_mean": fl_all_mean,
-                "Flesland_GHI_daily_Wh_sum": fs_all_sum,
-                "Flesland_GHI_daily_Wh_mean": fs_all_mean
-            })
-
-    pbar.close()
-
-    return pd.DataFrame(results)
-
 
 def spatially_resolved_simulation_daily(
         simulation_results_csv,
@@ -578,11 +489,34 @@ def spatially_resolved_simulation_daily(
         verbose=False
     ):
     """
-    Daily spatially-resolved model:
-      - Uses 12 monthly k-maps
-      - Computes Florida/Flesland GHI for each simulation day
-      - Appends: year, month, doy, sky_type, sum & mean values
+    Apply spatially resolved clear-sky index from monthly clear-sky index maps for
+    Flesland and Florida station to the simulated mean daily irradiation.
+    
+    Only compute spatially resolved irradiation for mixed-sky conditions, clear sky 
+    and overcast sky conditions remain spatially uniform. 
+
+    Parameters
+    ----------
+    simulation_results_csv : str
+        Path to CSV file containing daily GHI simulations with columns:
+        'year', 'month', 'doy', 'sky_type', and 'GHI_daily_Wh'.
+
+    clear_sky_index_monthly_filepath : str
+        Path to a NetCDF file containing monthly clear-sky index maps
+        (dimensions: month × lat × lon).
+
+    verbose : bool, optional
+        If True, print progress and station information. Default is False.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Daily GHI timeseries for the stations, with columns:
+        - 'year', 'month', 'doy', 'sky_type'
+        - 'Florida_GHI_daily_Wh_mean'
+        - 'Flesland_GHI_daily_Wh_mean'
     """
+
 
     # ----------------------------------------------------------
     # Load simulation dataframe
@@ -634,7 +568,7 @@ def spatially_resolved_simulation_daily(
     results = []
 
     # ----------------------------------------------------------
-    # MONTH → YEAR → vectorized daily scaling
+    # Vectorized daily clear-sky index application
     # ----------------------------------------------------------
     for month in range(1, 13):
 
@@ -683,6 +617,7 @@ def spatially_resolved_simulation_daily(
 
     
 def describe_resuts(results): 
+    """Print some descriptive summaries for the long-term simulation of mean daily irradiation."""
     print(results.head())
     
     # Convert daily GHI from Wh/m² → kWh/m²
@@ -690,7 +625,7 @@ def describe_resuts(results):
     results["GHI_daily_mean_kWh"] = results["GHI_daily_mean_Wh"] / 1000
 
     # ---------------------------
-    # 1. Summary per year
+    # Summary per year
     # ---------------------------
     yearly_stats = results.groupby("year").agg(
         mean_daily_GHI_kWh=("GHI_daily_kWh", "mean"),
@@ -701,7 +636,7 @@ def describe_resuts(results):
     print(yearly_stats)
 
     # ---------------------------
-    # 2. Summary per month (aggregated over all years)
+    # Summary per month (aggregated over all years)
     # ---------------------------
     month_stats = results.groupby("month").agg(
         mean_daily_GHI_kWh=("GHI_daily_kWh", "mean"),
@@ -728,28 +663,26 @@ if __name__ == "__main__":
     model = "monthly"
     
     # Run simulation
-    #results = simulate_annual_ghi(monthly_sky_type_counts_filepath, area_mean_clear_sky_index_filepath,
-    #                    model=model, n_years=n_years, 
-    #                    verbose=False)
+    results = simulate_ghi_timeseries(monthly_sky_type_counts_filepath, area_mean_clear_sky_index_filepath,
+                        model=model, n_years=n_years, 
+                        verbose=False)
     ## Save to outpath
     outpath = f"data/processed/longterm_sim_ghi_{n_years}_k={model}.csv"
-    #results.to_csv(outpath, index=False)
-    #results = pd.read_csv(outpath)
-    
+    results.to_csv(outpath, index=False)    
         
     # ----------------------------------------------------------
-    # Spatially resolved simulation monthly 
+    # Spatially resolved simulation monthly ghi maps
     # ----------------------------------------------------------
-    #spatially_resolved_model(outpath, clear_sky_index_monthly_mixed_sky_filepath,
-    #                         ghi_monthly_spatial_longterm_sim_outpath, verbose=True)
+    spatial_ghi_maps_monthly(outpath, clear_sky_index_monthly_mixed_sky_filepath,
+                             ghi_monthly_spatial_longterm_sim_outpath, verbose=True)
     
     # ---------------------------------------------------------
-    # Florida Flesland pixels monthly timeseries
+    # Florida Flesland pixels daily timeseries
     # --------------------------------------------------------
-    results_df = spatially_resolved_simulation_daily(outpath, 
+    results_spatial = spatially_resolved_simulation_daily(outpath, 
                                                           clear_sky_index_monthly_mixed_sky_filepath, 
                                                           verbose = True)
     outpath_fl_fs_monthly = f"data/processed/longterm_sim_Florida_Flesland_daily_pixels_{n_years}_k={model}.csv"
-    results_df.to_csv(outpath_fl_fs_monthly, index=False)
+    results_spatial.to_csv(outpath_fl_fs_monthly, index=False)
 
     

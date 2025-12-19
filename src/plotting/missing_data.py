@@ -1,3 +1,8 @@
+# =================================================================
+# Plot the missing values/available data from ground stations 
+# and sentinel-2 for the studied time period as heatmaps. 
+# =================================================================
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -12,6 +17,9 @@ def heatmap_missing_values_frost(
     title="Missing values at Flesland and Florida stations 2015-2025 10:30-11:30 UTC",
     outpath="output/florida_flesland_na_2015-2025_heatmap.png"
 ):
+    """Plot heatmap of missing values from ground stations (downloaded from frost api) for each 
+    year and month of the study time period. """
+    
     # Load data
     df = pd.read_csv(frost_data_path)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
@@ -88,6 +96,8 @@ def heatmap_available_values_s2(
     title="Number of available Sentinel-2 observations per month",
     outpath="output/s2_available_obs_heatmap.png"
 ):
+    """Plot available data from Sentinel-2 for each month and year of the 
+    studied time period as heatmap. """
     # Load S2 data
     df = pd.read_csv(s2_data_path)
     df["date"] = pd.to_datetime(df["date"])
@@ -149,7 +159,7 @@ def main():
     frost_data = "data/processed/frost_ghi_1M_Flesland_Florida_10:30-11:30UTC.csv"
     s2_data = "data/processed/s2_cloud_cover_large_thresh_40.csv"
     heatmap_missing_values_frost(frost_data)
-    #heatmap_available_values_s2(s2_data)
+    heatmap_available_values_s2(s2_data)
 
 if __name__ == "__main__":
     main()

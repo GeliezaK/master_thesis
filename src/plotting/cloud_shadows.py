@@ -1,3 +1,8 @@
+# ============================================================================
+# Plotting functions using the spatial cloud shadow maps created for all 
+# Sentinel-2 overpasses 
+# ============================================================================
+
 import matplotlib.pyplot as plt 
 import matplotlib.colors as mcolors
 import pandas as pd
@@ -7,7 +12,7 @@ import xarray as xr
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from src.model import BBOX, COARSE_RESOLUTIONS
-from src.plotting.high_res_maps import plot_single_band, plot_band_with_extent
+from src.plotting.high_res_maps import plot_single_band, plot_band_with_extent, plot_monthly_results
 from src.model.cloud_shadow import get_cloud_shadow_displacement, get_solar_angle, read_shadow_roi
 
 def get_shadow_from_ind(shadow_nc_file, ind): 
@@ -119,49 +124,6 @@ def analyze_cloud_shadow_displacement(cloud_cover_table_path, cth):
     plt.savefig(outpath)
     print(f"Saved figure to {outpath}.")
     
-def create_shadow_gif(s2_cloud_mask_sample):
-    cbh_m = 1000
-    sat_zenith = 5
-    sat_azimuth = 150.5
-
-    images = []
-    timestamp = datetime(2017,8,25,6,0,0)
-    endtime = datetime(2017,8,25,18,0,0)
-
-    while timestamp <= endtime:
-        print(f"Hour: {timestamp.hour}")
-        timestamp_str = timestamp.strftime("%Y%m%dT%H%M%S")
-        # Example solar angles (replace with real function)
-        solar_zenith, solar_azimuth = get_solar_angle(timestamp)
-        dx_m, dy_m = get_cloud_shadow_displacement(solar_zenith, solar_azimuth, cbh_m, sat_zenith, sat_azimuth)
-        shadow_new, shadow_bbox = read_shadow_roi(s2_cloud_mask_sample, dx_m, dy_m)
-        #shadow_old, _ = project_cloud_shadow(s2_cloud_mask_sample, dy_m/10, dx_m/10, BBOX)
-
-        # Plot side-by-side comparison
-        frame_path = f"output/gifs/frame_{timestamp_str}.png"
-        plot_shadow_comparison(shadow_new, shadow_new, timestamp_str, frame_path)
-        images.append(imageio.imread(frame_path))
-        timestamp += timedelta(hours=1)
-
-    # Save GIF
-    gif_path = "output/shadow_comparison.gif"
-    imageio.mimsave(gif_path, images, duration=0.5)
-    print("GIF saved at", gif_path)
-    
-
-def plot_shadow_comparison(shadow_new, shadow_old, timestamp_str, output_path):
-    fig, axes = plt.subplots(1, 2, figsize=(10,5))
-    axes[0].imshow(shadow_new, cmap='Greys', vmin=0, vmax=1)
-    axes[0].set_title("New method")
-    axes[0].axis('off')
-    axes[1].imshow(shadow_old, cmap='Greys', vmin=0, vmax=1)
-    axes[1].set_title("Old method")
-    axes[1].axis('off')
-    plt.suptitle(timestamp_str)
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150)
-    plt.close(fig)
-
 
 def plot_cloud_shadow_for_timestep(shadow_nc_file, ind=0):
     """
@@ -181,13 +143,11 @@ def plot_cloud_shadow_for_timestep(shadow_nc_file, ind=0):
             f"Cloud shadow for {ts_str}",
             "Cloud shadow", cmap=cmap, norm=norm)
     
-    
 
 def plot_shadow_frequency_all_obs(monthly_shadow_frequency_filepath):
     """
-    Compute and plot the long-term mean shadow frequency across all months
-    from a NetCDF file with monthly means and observation counts.
-    
+    Compute and plot the overall mean cloud shadow frequency over the whole
+    study area. 
     """
     # -------------------------------------------------------------------------
     # Load dataset
@@ -232,18 +192,17 @@ if __name__ == "__main__":
     cloud_cover_table_filepath = "data/processed/s2_cloud_cover_table_small_and_large_with_cloud_props.csv"
     cloud_shadow_nc_res10 = "data/processed/cloud_shadow_thresh40.nc"
     monthly_cloud_shadow_nc = "data/processed/cloud_shadow_thresh40_monthly.nc"
-    # analyze_cloud_shadow_displacement(cloud_cover_table_filepath, 2000)
-    #create_shadow_gif(s2_cloud_mask_sample)
-    """ plot_monthly_results(monthly_cloud_shadow_nc_test, var_name="shadow_frequency", 
+    
+    analyze_cloud_shadow_displacement(cloud_cover_table_filepath, 2000)
+    plot_monthly_results(monthly_cloud_shadow_nc, var_name="shadow_frequency", 
                          outpath="output/monthly_cloud_shadow_freq_thresh_40.png",
                          title="Monthly Cloud Shadow Frequencies (2015-2025)", 
                          colorbar_ylabel="Frequency of Cloud Shadow", 
-                         histogram_title="Distribution of Pixel Values for Monthly Cloud Shadow", 
-                         value_ranges=[0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9], 
-                         value_colors=["yellow", "limegreen", "green", "teal", "dodgerblue", "mediumblue", 
-                                       "darkblue"]) """
-    #plot_shadow_frequency_all_obs(monthly_shadow_frequency_filepath=monthly_cloud_shadow_nc)
-    print(BBOX)
+                         histogram_title="Distribution of Pixel Values for Monthly Cloud Shadow") 
+    
+    plot_shadow_frequency_all_obs(monthly_shadow_frequency_filepath=monthly_cloud_shadow_nc)
+    
+    # Plot 10 m resolution sample image
     ind = 148
     shadow_nc_file = f"data/processed/cloud_shadow_thresh40.nc"
     shadow_mask, timestamp, lat, lon = get_shadow_from_ind(shadow_nc_file, ind=ind)
@@ -254,9 +213,11 @@ if __name__ == "__main__":
             BBOX["west"], BBOX["east"], BBOX["south"], BBOX["north"],
             f"output/cloud_shadow_10m_{ts_str}")
     
+    # Plot same image with coarser resolutions
     for res in COARSE_RESOLUTIONS: 
         shadow_nc_file = f"data/processed/cloud_shadow_{res}m.nc"
         shadow_mask, timestamp, lat, lon = get_shadow_from_ind(shadow_nc_file, ind=ind)
+        print(f"res: {res}, min: {np.nanmin(shadow_mask)}, max: {np.nanmax(shadow_mask)}")
 
         filestem = Path(shadow_nc_file).stem
         ts_str = timestamp.strftime("%Y-%m-%d")

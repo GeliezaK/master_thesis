@@ -1,3 +1,8 @@
+# ===================================================================================
+# Various plotting functions to display spatial maps of global horizontal irradiance/
+# irradiance/irradiation for different sky types or seasons. 
+# ===================================================================================
+
 import os
 import numpy as np
 import xarray as xr
@@ -143,18 +148,17 @@ if __name__ == "__main__":
                   "springgreen", "lime", "greenyellow", "yellow", "gold", "orange", "darkorange", "red"]
 
     cmap = ListedColormap(value_colors)
-    #norm = BoundaryNorm(value_ranges, ncolors=cmap.N, clip=True)
     plot_seasonal_comparison_maps(monthly_longterm_sim_results, ["mixed_sky_ghi", "all_sky_ghi"], 
                                   ["Mixed", "All-Sky"], 
                                   ["month_mixed_count", "month_all_sky_count"], 
                                   outpath= "output/longterm_sim_monthly_maps_mixed_vs_all-sky.png",
-                         title="Mean Daily Irradiation [kWh/m²] per Month (N = 5000)", 
+                         title="Mean Daily Irradiation [kWh/m²] per Season (Model 3)", 
                          colorbar_label="Mean Daily Irradiation [kWh/m²]", 
-                         histogram_title="Distribution of Pixel Values for Mean Daily Irradiation [kWh/m²] (N = 5000)", 
+                         histogram_title="Distribution of Pixel Values for Mean Daily Irradiation [kWh/m²] (Model 3)", 
                          cmap=cmap) 
     
-    #plot_ghi_for_timestep(ghi_file=ghi_maps_filepath, ind=3, outdir="output")
-    """ plot_monthly_results(monthly_ghi_maps, "I_total", "output/monthly_irradiance_UTC11.png",
+    plot_ghi_for_timestep(ghi_file=ghi_maps_filepath, ind=3, outdir="output")
+    plot_monthly_results(monthly_ghi_maps, "I_total", "output/monthly_irradiance_UTC11.png",
                          "Monthly Surface Irradiance (2015-2025, 11:00 UTC)", 
                          "Mean Total Irradiance [W/m²]", 
                          "Distribution of Pixel Values for Monthly Irradiance (11:00 UTC)", 
@@ -166,7 +170,7 @@ if __name__ == "__main__":
                          "Mean Total Irradiance [W/m²]", 
                          "Distribution of Pixel Values for Monthly Irradiance (11:00 UTC)", 
                          value_colors=["black", "dimgrey", "darkblue", "blue", "teal", "green",
-                                       "lime", "greenyellow", "yellow", "gold", "orange", "darkorange", "red"])"""
-    #plot_irradiance_all_obs(monthly_ghi_maps)
-    #plot_sky_type_aggregated(aggregated_ghi_maps_outpath=aggregated_sky_type_clear_sky_index_outpath)
+                                       "lime", "greenyellow", "yellow", "gold", "orange", "darkorange", "red"])
+    plot_irradiance_all_obs(monthly_ghi_maps)
+    plot_sky_type_aggregated(aggregated_ghi_maps_outpath=aggregated_sky_type_clear_sky_index_outpath)
     

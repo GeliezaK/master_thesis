@@ -8,7 +8,7 @@ from rasterio.windows import from_bounds
 from tqdm import tqdm 
 from netCDF4 import Dataset, date2num
 import pandas as pd
-from model.instantaneous_GHI_model import get_cloud_properties
+from src.model.instantaneous_GHI_model import get_cloud_properties
 from src.model import CENTER_LAT, CENTER_LON, BBOX, MIXED_THRESHOLD, OVERCAST_THRESHOLD, COARSE_RESOLUTIONS
 
 # Radius of Earth

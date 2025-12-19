@@ -1,3 +1,8 @@
+# =====================================================================
+# Plotting functions to display and inspect direct shortwave correction
+# factor computed in src.model.shortwave_correction_factor. 
+# =====================================================================
+
 import xarray as xr
 import numpy as np
 import rasterio
@@ -8,10 +13,12 @@ import matplotlib.gridspec as gridspec
 import matplotlib.colors as colors
 from datetime import datetime, timezone, timedelta
 from src.model.cloud_shadow import get_solar_angle
-from preprocessing.merge_station_obs_with_sim import extract_pixel_by_location, convert_cftime_to_datetime
+from src.preprocessing.merge_station_obs_with_sim import extract_pixel_by_location, convert_cftime_to_datetime
 
 def plot_sw_cor_for_timestep(sw_cor_file, elevation_file, ind=10):
-    """Plot elevation the shortwave correction factor for a specific timestep"""
+    """Plot elevation and the shortwave correction factor for a specific timestep
+    in two subplots. Function adapted from https://github.com/ChristianSteger/HORAYZON 
+    in file examples/shadow/gridded_curved_DEM_SRTM.py"""
 
     # Load sw cor data
     ds = xr.open_dataset(sw_cor_file)
@@ -67,7 +74,6 @@ def plot_sw_cor_for_timestep(sw_cor_file, elevation_file, ind=10):
     mpl.colorbar.ColorbarBase(ax, cmap=cmap, norm=norm, orientation="vertical")
     plt.ylabel("Elevation [m a.s.l.]", labelpad=10.0)
     ax = plt.subplot(gs[1, 0])
-    vmax = np.nanmax(sw_dir_cor)
     levels = np.arange(0.0, 2.25, 0.25)
     ticks = np.arange(0.0, 2.5, 0.5)
     cmap = plt.get_cmap("viridis")
@@ -105,7 +111,7 @@ def plot_sw_cor_for_timestep(sw_cor_file, elevation_file, ind=10):
 def plot_sw_dir_cor_at_locations(lat_list, lon_list, label_list, filepath, outpath, title):
     """
     Plot the direct shortwave correction factor (sw_dir_cor) time series
-    for multiple locations at hour == 11.
+    for multiple locations (e.g. flesland and florida stations) at hour == 11.
 
     Parameters
     ----------
@@ -168,7 +174,8 @@ def plot_sw_dir_cor_at_locations(lat_list, lon_list, label_list, filepath, outpa
 def check_pixel_location(nc_filepath, var_name, lat_target, lon_target, time_index=0, zoom_radius=200, enlargement=10, title="Pixel Check"):
     """
     Load one time step from a NetCDF file and highlight the pixel closest to the given lat/lon.
-    Zoom in around the pixel with a specified radius.
+    Zoom in around the pixel with a specified radius. Plot the shortwave correction factor 
+    for the selected radius around the target location. 
     
     Parameters
     ----------
@@ -255,18 +262,11 @@ def check_pixel_location(nc_filepath, var_name, lat_target, lon_target, time_ind
 def main():
     sw_cor_filepath = "data/processed/sw_cor/sw_cor_bergen.nc"
     DSM_filepath = "data/processed/bergen_dsm_10m_epsg4326_reducer_mean.tif"
-    #plot_sw_cor_for_timestep(sw_cor_file=sw_cor_filepath, elevation_file=DSM_filepath, ind=100)
-    Florida_lat, Florida_lon = 60.38306, 5.33306 # source: ECAD
+    plot_sw_cor_for_timestep(sw_cor_file=sw_cor_filepath, elevation_file=DSM_filepath, ind=100)
+    
     Florida_lat_maps, Florida_lon_maps = 60.38375436372568, 5.331906586858453
-    Flesland_lat, Flesland_lon = 60.28917, 5.22639
-    Flesland_lat_maps, Flesland_lon_maps = 60.28911716265775, 5.227437237523992
     airport_lat_maps, airport_lon_maps = 60.28493807989472, 5.222414640437133
-    lats = [Florida_lat, Flesland_lat]
-    lons = [Florida_lon, Flesland_lon]
-    labels = ["Florida", "Flesland"]
-    lats_maps = [Florida_lat_maps, Flesland_lat_maps]
-    lons_maps = [Florida_lon_maps, Flesland_lon_maps]
-    labels_maps = ["Florida (Maps)", "Flesland (Maps)"]
+    
     plot_sw_dir_cor_at_locations(lat_list=[airport_lat_maps], lon_list=[airport_lon_maps], label_list=["Airport"],
                                  filepath=sw_cor_filepath, 
                                  outpath="output/sw_cor_at_Flesland_Florida_pixels_11UTC_airport.png", 

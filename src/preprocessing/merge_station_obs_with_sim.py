@@ -73,12 +73,12 @@ def extract_pixel_by_location(nc_filepath, pixel_lat, pixel_lon, var_name="GHI_t
     
     # Extract time dimension
     time_var = nc.variables[time_name]
-    #times = num2date(time_var[:], units=time_var.units, calendar=time_var.calendar)
+    times = num2date(time_var[:], units=time_var.units, calendar=time_var.calendar)
 
     # Extract pixel values
     var_timeseries = var[:, ilat, ilon]
     nc.close()
-    return time_var, var_timeseries
+    return times, var_timeseries
     
 def convert_cftime_to_datetime(val):
     """Convert DatetimeGregorian to pd.datetime"""

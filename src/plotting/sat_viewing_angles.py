@@ -1,6 +1,10 @@
+# ===========================================================================
+# Diagnostic plots to check the distribution of satellite viewing angles
+# from Sentinel-2 
+# ===========================================================================
+
 import matplotlib.pyplot as plt
 import pandas as pd 
-import numpy as np
 import mgrs
 import shapely.geometry as geom
 import cartopy.crs as ccrs
@@ -8,7 +12,8 @@ from src.plotting import STATIONS
 
 cloud_cover_table_filepath = "data/processed/s2_cloud_cover_table_small_and_large_with_cloud_props.csv"
 
-def mean_sat_angles_distribution(cloud_cover_filepath, outpath=None):
+def mean_sat_angles_distribution(cloud_cover_table_filepath, outpath=None):
+    """Plot distribution (histogram) of mean azimuth and mean zenith satellite viewing angles."""
     cloud_props = pd.read_csv(cloud_cover_table_filepath)
     cloud_props = cloud_props[["MEAN_AZIMUTH", "MEAN_ZENITH"]]
     # Count NaN values per column
@@ -84,39 +89,10 @@ def mean_sat_angles_per_doy(cloud_cover_filepath, start_date=None, end_date=None
     plt.savefig(outpath)
     print(f"Mean angles per DOY plot saved to {outpath}.")
     
-def satellite_viewing_phases(cloud_cover_filepath):
-    df = pd.read_csv(cloud_cover_table_filepath)
-    df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d")
-
-    # Detect phase changes with tolerance of 1 degree
-    zenith = df["MEAN_ZENITH"].values
-    azimuth = df["MEAN_AZIMUTH"].values
-    
-    # Initialize phase_id array
-    phase_id = [0]
-
-    for i in range(1, len(df)):
-        if not (np.isclose(zenith[i], zenith[i-1], atol=1) and np.isclose(azimuth[i], azimuth[i-1], atol=1)):
-            phase_id.append(phase_id[-1] + 1)  # new phase
-        else:
-            phase_id.append(phase_id[-1])  # same phase
-
-    df["phase_id"] = phase_id
-
-    # Calculate phase lengths in days
-    phase_lengths = df.groupby("phase_id").agg(
-        start_date=("date", "first"),
-        end_date=("date", "last"),
-        zenith=("MEAN_ZENITH", "first"),
-        azimuth=("MEAN_AZIMUTH", "first")
-    ).reset_index()
-
-    phase_lengths["length_days"] = (phase_lengths["end_date"] - phase_lengths["start_date"]).dt.days + 1
-
-    print(phase_lengths)
-    
 
 def scatter_viewing_angles(cloud_cover_filepath, outpath=None):
+    """Plot the mean zenith against mean azimuth angles for all possible combinations in 
+    the Sentinel-2 viewing angles data."""
     cloud_props = pd.read_csv(cloud_cover_filepath)
 
     unique_angles = cloud_props[["MEAN_ZENITH", "MEAN_AZIMUTH"]].drop_duplicates()
@@ -134,6 +110,7 @@ def scatter_viewing_angles(cloud_cover_filepath, outpath=None):
     
 
 def plot_mgrs_tile(tile="32VKM"):
+    """Plot location and coastline of a specific mgrs tile."""
     # Initialize converter
     m = mgrs.MGRS()
 
@@ -173,11 +150,10 @@ def plot_mgrs_tile(tile="32VKM"):
  
 
 if __name__ == "__main__": 
-    #mean_sat_angles_distribution(cloud_cover_table_filepath)
-    #mean_sat_angles_per_doy(cloud_cover_table_filepath, start_date="2024-01-01", end_date="2025-12-31")
-    #scatter_viewing_angles(cloud_cover_table_filepath)
+    mean_sat_angles_distribution(cloud_cover_table_filepath)
+    mean_sat_angles_per_doy(cloud_cover_table_filepath, start_date="2024-01-01", end_date="2025-12-31")
+    scatter_viewing_angles(cloud_cover_table_filepath)
     viewing_angles_table_path = "data/processed/S2_viewing_angles_full_table.csv"
     viewing_angles = pd.read_csv(viewing_angles_table_path)
-    #print(viewing_angles[["MEAN_ZENITH", "MEAN_AZIMUTH", "STD_ZENITH", "STD_AZIMUTH"]].describe())
-    #plot_mgrs_tile("32VLM")
-    #satellite_viewing_phases(cloud_cover_table_filepath)
+    print(viewing_angles[["MEAN_ZENITH", "MEAN_AZIMUTH", "STD_ZENITH", "STD_AZIMUTH"]].describe())
+    plot_mgrs_tile("32VLM")

@@ -1,3 +1,8 @@
+# ====================================================================
+# Plot distribution of clear sky index for sky type and month. 
+# Plot probability (with uncertainty) for each sky type per month. 
+# ====================================================================
+
 import matplotlib.pyplot as plt 
 import pandas as pd
 import numpy as np
@@ -7,9 +12,9 @@ from src.model.longterm_GHI_simulation import sample_dirichlet
 
 set_paper_style()
 
-# ============================================================
+# -------------------------------------------------------------
 # Helper function: plot histogram for a subset with mean & sd
-# ============================================================
+# -------------------------------------------------------------
 def plot_hist_with_stats(ax, data, title):
     """Plot histogram on the given axis with mean and mean ± sd lines."""
     if len(data) == 0:
@@ -32,11 +37,11 @@ def plot_hist_with_stats(ax, data, title):
     # Print stats
     print(f"{title}: mean = {mean_val:.6f}, sd = {sd_val:.6f}")
 
-
-# ============================================================
+# -------------------------------------------------------------
 # Plot histograms per sky_type in 3 subplots
-# ============================================================
+# -------------------------------------------------------------
 def plot_histograms_by_sky_type(df, outpath="output/clear_sky_index_histogram_sky_type.png"):
+    """Plot histograms of clear sky index per sky type."""
     sky_types = ["clear", "mixed", "overcast"]
     fig, axes = plt.subplots(1, 3, figsize=(15, 4), sharey=True)
 
@@ -49,10 +54,11 @@ def plot_histograms_by_sky_type(df, outpath="output/clear_sky_index_histogram_sk
     print(f"Saved histogram to {outpath}.")
 
 
-# ============================================================
+# -------------------------------------------------------------
 # Plot per month and sky type (36 subplots)
-# ============================================================
+# -------------------------------------------------------------
 def plot_histograms_by_month_and_sky(df, outpath="output/clear_sky_index_histogram_monthly_sky_type.png"):
+    """Plot histogram of clear sky index per sky type and month."""
     sky_types = ["clear", "mixed", "overcast"]
     months = range(1, 13)
 
@@ -72,6 +78,22 @@ def plot_histograms_by_month_and_sky(df, outpath="output/clear_sky_index_histogr
 
 
 def plot_sky_type_probs_with_sd(samples_by_month, outpath="output/sky_type_probabilities_uncertainty.png"):
+    """
+    Plot monthly sky type probabilities with uncertainty (mean ± standard deviation) as grouped bars.
+
+    Parameters
+    ----------
+    samples_by_month : dict
+        Dictionary mapping month (int) to a NumPy array of Dirichlet samples
+        with shape (n_samples, 3) for [clear, mixed, overcast].
+    outpath : str, optional
+        File path to save the plot (default: "output/sky_type_probabilities_uncertainty.png").
+
+    Outputs
+    -------
+    Saves a grouped bar plot showing posterior mean and standard deviation of sky type probabilities for each month.
+    """
+    
     months = sorted(samples_by_month.keys())
 
     clear_mean, mixed_mean, over_mean = [], [], []
@@ -145,17 +167,17 @@ if __name__ == "__main__":
     area_mean_k_path = "data/processed/area_mean_clear_sky_index_per_obs.csv"
     monthly_sky_type_counts_filepath = "data/processed/monthly_sky_type_counts.csv"
 
-    #df = pd.read_csv(area_mean_k_path)
+    df = pd.read_csv(area_mean_k_path)
 
     # Ensure correct types if needed
-    #df["date"] = pd.to_datetime(df["date"])
-    #df["month"] = df["month"].astype(int)
+    df["date"] = pd.to_datetime(df["date"])
+    df["month"] = df["month"].astype(int)
 
-    #print("=== Plotting per sky type ===")
-    #plot_histograms_by_sky_type(df)
+    print("=== Plotting per sky type ===")
+    plot_histograms_by_sky_type(df)
 
-    #print("\n=== Plotting per month and sky type ===")
-    #plot_histograms_by_month_and_sky(df)
+    print("\n=== Plotting per month and sky type ===")
+    plot_histograms_by_month_and_sky(df)
 
     samples_by_month = sample_dirichlet(monthly_sky_type_counts_filepath, 5000)
     plot_sky_type_probs_with_sd(samples_by_month)

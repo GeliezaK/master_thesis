@@ -8,7 +8,7 @@ import netCDF4 as nc
 from cftime import DatetimeGregorian
 import pandas as pd
 from src.preprocessing.preprocess_netcdf_data import add_claas3_variable_to_cloud_cover_table, get_claas3_filepath, compute_roi_stats
-from preprocessing.merge_station_obs_with_sim import add_simulated_florida_flesland_ghi_by_date, extract_pixel_by_location
+from src.preprocessing.merge_station_obs_with_sim import add_simulated_florida_flesland_ghi_by_date, extract_pixel_by_location
 
 
 class TestGetClaas3Filepath(unittest.TestCase):
