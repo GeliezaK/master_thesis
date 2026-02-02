@@ -195,13 +195,13 @@ def compute_error_metrics(df, sim_col="flesland_ghi_sim_horizontal_log",
         if len(obs) == 0:
             return {k: np.nan for k in [
                 "lambda", "delta", "sigma",
-                "MBE", "MAE", "RMSE", f"% within ±{tolerance_pct}%",
+                "rMBE", "rMAE", "RMSE", f"% within ±{tolerance_pct}%",
                 "NSE", "Willmott_d", "Legates_E1", "R2", "KSI"
             ]}
 
         # --- Basic metrics ---
-        mbe = np.mean(sim - obs)
-        mae = np.mean(np.abs(sim - obs))
+        mbe = np.mean(sim - obs) / np.mean(obs)
+        mae = np.mean(np.abs(sim - obs))/ np.mean(obs)
         rmse = np.sqrt(np.mean((sim - obs)**2))
         pct_within_tol = np.mean(np.abs(sim - obs) <= (tolerance_pct / 100) * obs) * 100
         
@@ -221,8 +221,8 @@ def compute_error_metrics(df, sim_col="flesland_ghi_sim_horizontal_log",
         ksi = compute_ksi(sim, obs)
 
         return {
-            "MBE": mbe,
-            "MAE": mae,
+            "rMBE": mbe,
+            "rMAE": mae,
             "RMSE": rmse,
             f"% within ±{tolerance_pct}%": pct_within_tol,
             "lambda": lam, 
@@ -808,7 +808,7 @@ def main():
                 print(f"  {sky:>15s} → mean: {mean_val:6.2f}%, median: {median_val:6.2f}%, std: {std_val:6.2f}%, "
                     f"min: {min_val:6.2f}%, max: {max_val:6.2f}%  (N={len(subset)})")
         
-        
+    """    
     for station_name in stations:
         sim_col = f"{station_name.lower()}_ghi_sim_horizontal"
         obs_col = f"{station_name}_ghi_1M"
@@ -848,10 +848,18 @@ def main():
 
 
     # Make sure date is datetime
-    sim_vs_obs_sub["date"] = pd.to_datetime(sim_vs_obs_sub["date"])
+    sim_vs_obs_sub["date"] = pd.to_datetime(sim_vs_obs_sub["date"])"""
     
     
     # ---------------------------------- Compute error metrics -----------------------------------
+    flesland_metrics = compute_error_metrics(sim_vs_obs_sub, sim_col="flesland_ghi_sim_horizontal", obs_col="Flesland_ghi_1M")
+    florida_metrics = compute_error_metrics(sim_vs_obs_sub, sim_col="florida_ghi_sim_horizontal", obs_col="Florida_ghi_1M")
+    print(f"Flesland error metrics: ")
+    print(pd.DataFrame(flesland_metrics).T)
+    print(f"Florida error metrics: ")
+    print(pd.DataFrame(florida_metrics).T)
+    
+    """
     coarse_sims = [f"_ghi_sim_ECAD_{res}m" for res in COARSE_RESOLUTIONS]
     coarse_log_sims = [sim_scen + "_log" for sim_scen in coarse_sims]
     
@@ -939,7 +947,7 @@ def main():
             ylabel="GHI (W/m²)",
             title=f"DOY vs Florida GHI ({year})",
             outpath=f"output/lineplot_florida_sim_obs_doy_{year}.png"
-        )   
+        )   """
     
     
 if __name__ == "__main__": 

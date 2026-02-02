@@ -78,8 +78,8 @@ coast_clipped = gpd.clip(coast, raster_gdf)
 landmarks = {
     #"Bergen Center": (60.39299, 5.32415),
     #"Bergen Airport": (60.2934, 5.2181),
-    "Florida": (60.3833, 5.3333),
-    "Flesland": (60.292792, 5.222689)
+    #"Florida": (60.3833, 5.3333), #TODO: uncomment these locations
+    #"Flesland": (60.292792, 5.222689)
 }
 
 # Convert landmarks to GeoDataFrame in UTM32
@@ -814,8 +814,8 @@ def plot_single_band(
         for layer_path in extra_layers:
             try:
                 gdf_layer = gpd.read_file(layer_path).to_crs(crs)
-                            # Check if this is a buildings layer
-                            
+                
+                # Check if this is a buildings layer            
                 if "building" in layer_path.lower():
                     # Reproject to projected CRS for buffering (meters)
                     gdf_layer_proj = gdf_layer.to_crs(32632)  # UTM zone for Bergen
@@ -833,9 +833,10 @@ def plot_single_band(
     # --- EXTRA LANDMARKS (points) ---
     if extra_landmarks:
         for name, (lat, lon) in extra_landmarks.items():
+            print(f"Plotting landmark {name} at {lat:.2f}, {lon:.2f}")
             txt = ax.text(
                 lon, lat, name,
-                fontsize=12, color='white', weight='bold',
+                fontsize=14, color='white', weight='bold', #TODO: reset font to 12
                 transform=ccrs.PlateCarree(), zorder=6,
             )
             txt.set_path_effects([

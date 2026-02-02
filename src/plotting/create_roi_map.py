@@ -59,13 +59,22 @@ if __name__ == "__main__":
         "Osterøy": (60.47, 5.49),               
         "Gullfjellet →": (60.34, 5.48)          
     }
+    pv_locations = {
+        "x Askøy": (60.45067, 5.13047),
+        "x City Center": (60.38647, 5.32831),
+        "x Flesland": (60.28800, 5.22908),
+        "x Litlesotra": (60.36686, 5.15631),
+        "x Paradis": (60.34178, 5.34694),
+        "x Haukeland": (60.36003, 5.45733),
+    }
+
     
     # Geojson file with building footprints, downloaded from Open Street Map
     buildings_path = "data/raw/building_footprints_bergen.geojson"
-    plot_single_tif(dsm_filepath, outpath="output/bergen_roi_map.png", 
-                    title="Study Area (Bergen)", 
+    plot_single_tif(dsm_filepath, outpath="output/PV_plant_locations.png", 
+                    title="PV Plant Locations", 
                     colorbar_label="Elevation (m)", 
                     cmap=cmap,
                     norm=norm, 
                     extra_layers=[buildings_path],
-                    extra_landmarks=landmarks)
+                    extra_landmarks=pv_locations)

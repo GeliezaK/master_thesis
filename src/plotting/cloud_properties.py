@@ -62,9 +62,67 @@ def plot_hists_and_bins(cloud_props_filepath, outpath, roi="small"):
     
     print(f"✅ Histogram plots saved to {outpath}")
     
+def plot_clear_sky_index_vs_cot(lut_path, outpath="output/clear_sky_index_vs_cot.png"):
+    lut = pd.read_csv(lut_path) 
+
+    # Select relevant columns and drop NaNs
+    data = lut[["cot", "caf_ghi"]].dropna()
+
+    # Median CAF per COT value (LUT-style)
+    median_by_cot = data.groupby("cot")["caf_ghi"].median()
+
+    # Print medians to console
+    print("Median clear-sky index (CAF_GHI) per COT:")
+    for cot, median_caf in median_by_cot.items():
+        print(f"COT = {cot:>6}: median CAF = {median_caf:.3f}")
+
+    # ---- Plot ----
+    plt.figure(figsize=(6.5, 4.5))
+    
+    # Scatter all points
+    plt.scatter(
+        data["cot"],
+        data["caf_ghi"],
+        s=12,
+        alpha=0.4,
+        label="LUT samples"
+    )
+
+    
+    # Median CAF per COT (highlighted markers)
+    plt.plot(
+        median_by_cot.index,
+        median_by_cot.values,
+        marker="o",
+        linestyle="-",
+        linewidth=2,
+        color="red",
+        label="Median per COT"
+    )
+
+    # Axes, labels, title
+    plt.xscale("log")
+    plt.xlabel("Cloud Optical Thickness (COT) [-]")
+    plt.ylabel("Clear-sky index [-]")
+    plt.title("Clear-sky index vs. COT")
+
+    # Grid and limits
+    plt.grid(True, which="both", linestyle="--", alpha=0.5)
+    plt.ylim(0, 1.05)
+    plt.xlim(left=data["cot"].min())
+
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(outpath, dpi=300)
+    plt.close()
+
+    print(f"\nSaved figure to {outpath}")
+
+    
 
 if __name__ == "__main__": 
     s2_csv = "data/processed/s2_cloud_cover_table_small_and_large_with_cloud_props.csv"
+    lut_path = "data/processed/LUT/claas3/LUT.csv"
 
     cloud_props = pd.read_csv(s2_csv)
     # Select columns of interest and drop rows with any NaNs
@@ -96,4 +154,6 @@ if __name__ == "__main__":
 
     print(model.summary())
 
-    plot_hists_and_bins(s2_csv, f"output/cloud_props_hist_lut_bins.png", roi="small")
+    #plot_hists_and_bins(s2_csv, f"output/cloud_props_hist_lut_bins.png", roi="small")
+    
+    plot_clear_sky_index_vs_cot(lut_path)
